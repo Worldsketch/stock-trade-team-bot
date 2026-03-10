@@ -1,0 +1,19 @@
+.env
+venv/
+__pycache__/
+*.pyc
+
+# Backtest outputs
+*.png
+
+# Deploy/debug scripts
+*.sh
+*.exp
+
+# IDE
+.cursor/*
+!.cursor/rules/
+.vscode/
+
+# OS
+.DS_Store
