@@ -391,9 +391,10 @@ class TradingBot:
             return {"success": False, "message": f"{symbol} 거래소 조회 실패: {e}"}
 
         already_held: bool = False
+        bal_data: Dict[str, Any] = {}
         try:
-            bal_data: Dict[str, Any] = self.api.get_balance_and_positions()
-            for pos in bal_data["positions"]:
+            bal_data = self.api.get_balance_and_positions()
+            for pos in bal_data.get("positions", []):
                 if pos["symbol"] == symbol and pos.get("quantity", 0) > 0:
                     already_held = True
                     break

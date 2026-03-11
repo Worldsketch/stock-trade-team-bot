@@ -47,7 +47,6 @@ class KoreaInvestmentAPI:
 
     def _discover_exchange(self, symbol: str) -> str:
         """3개 거래소를 순회하며 유효한 거래소를 찾아 캐시합니다."""
-        self._ensure_token()
         url: str = f"{self.base_url}/uapi/overseas-price/v1/quotations/price"
         headers: Dict[str, str] = self.get_headers("HHDFS00000300")
         for excd in ("NAS", "NYS", "AMS"):
