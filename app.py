@@ -186,6 +186,9 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
                     "base_asset": slot_info.get("base_asset", sym),
                 })
 
+        slot_order: Dict[str, int] = {s['symbol']: i for i, s in enumerate(bot_instance.slot_manager.get_active_slots())}
+        positions_list.sort(key=lambda p: slot_order.get(p["symbol"], 999))
+
         api_exrt: float = data.get("exchange_rate", 0.0)
         if api_exrt > 0:
             bot_instance.exchange_rate = api_exrt
@@ -219,6 +222,9 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
             "realized_pnl": _calc_realized_pnl(),
             "slots": bot_instance.slot_manager.get_active_slots(),
             "max_slots": bot_instance.slot_manager.max_slots,
+            "market_open": bot_instance.is_active_trading_time(bot_instance.get_eastern_time()),
+            "is_dst": bool(bot_instance.get_eastern_time().dst()),
+            "et_time": bot_instance.get_eastern_time().strftime("%H:%M"),
         }
     except Exception as e:
         try:
@@ -397,10 +403,6 @@ async def get_chart_data(symbol: str = "", period: str = "5d", interval: str = "
             "volume": hist["Volume"].astype(int),
         }).to_dict("records")
 
-        sma200_val: Optional[float] = None
-        if interval in ("1d",) and len(hist) >= 200:
-            sma200_val = round(float(hist["Close"].tail(200).mean()), 2)
-
         trades: list = []
         trade_file: str = "trade_log.json"
         if os.path.exists(trade_file):
@@ -410,7 +412,7 @@ async def get_chart_data(symbol: str = "", period: str = "5d", interval: str = "
                 if t.get("symbol") == symbol:
                     trades.append({"time": t.get("timestamp", ""), "side": t.get("side", ""), "price": t.get("price", 0), "qty": t.get("qty", 0)})
 
-        result: Dict[str, Any] = {"candles": candles, "symbol": symbol, "sma200": sma200_val, "trades": trades}
+        result: Dict[str, Any] = {"candles": candles, "symbol": symbol, "trades": trades}
         _chart_cache[cache_key] = {"data": result, "ts": now}
         return result
     except Exception as e:
