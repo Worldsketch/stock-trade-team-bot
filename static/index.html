@@ -631,6 +631,7 @@
                 if (!data.candles || data.candles.length === 0) return;
 
                 candleSeries.setData(data.candles);
+                _lastCandle = data.candles.length > 0 ? { ...data.candles[data.candles.length - 1] } : null;
                 volumeSeries.setData(data.candles.map(c => ({
                     time: c.time, value: c.volume, color: c.close >= c.open ? 'rgba(16,185,129,0.25)' : 'rgba(244,63,94,0.25)'
                 })));
@@ -681,12 +682,27 @@
             loadChartData(currentChartSymbol, period, interval);
         }
 
+        let _lastCandle = null;
+
         function updateChartRealtime(positions) {
-            if (!candleSeries || !positions) return;
-            const pos = positions.find(p => p.symbol === currentChartSymbol);
+            if (!candleSeries || !positions || !_lastCandle) return;
+            const sym = currentChartSymbol;
+            let pos = positions.find(p => p.symbol === sym);
+            if (!pos) pos = positions.find(p => p.base_asset === sym);
             if (!pos || pos.current_price <= 0) return;
-            const now = Math.floor(Date.now() / 1000);
-            candleSeries.update({ time: now, open: pos.current_price, high: pos.current_price, low: pos.current_price, close: pos.current_price });
+            let price = pos.current_price;
+            if (pos.symbol !== sym && pos.base_asset === sym && pos.base_price > 0) {
+                price = pos.base_price;
+            }
+            const updated = {
+                time: _lastCandle.time,
+                open: _lastCandle.open,
+                high: Math.max(_lastCandle.high, price),
+                low: Math.min(_lastCandle.low, price),
+                close: price,
+            };
+            _lastCandle = updated;
+            candleSeries.update(updated);
         }
 
         function buildChartButtons(slots) {
@@ -1028,6 +1044,8 @@
                     </div>`;
                 document.getElementById('portfolioSummary').style.display = 'none';
             }
+
+            updateChartRealtime(data.positions);
 
             if (data.logs) {
                 const logContainer = document.getElementById('logContainer');

@@ -22,6 +22,7 @@ from bot import TradingBot
 bot_instance: Optional[TradingBot] = None
 bot_thread: Optional[threading.Thread] = None
 _status_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
+_base_price_cache: Dict[str, Any] = {}
 _strategy_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
 _realized_pnl_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
 
@@ -134,6 +135,21 @@ async def read_index() -> str:
     with open("static/index.html", "r", encoding="utf-8") as f:
         return f.read()
 
+def _get_cached_base_price(base_sym: str) -> float:
+    now: float = time.time()
+    cached = _base_price_cache.get(base_sym)
+    if cached and (now - cached["ts"]) < 10:
+        return cached["price"]
+    price: float = 0.0
+    if bot_instance:
+        try:
+            price = bot_instance.api.get_current_price(base_sym)
+        except Exception:
+            pass
+    _base_price_cache[base_sym] = {"price": price, "ts": now}
+    return price
+
+
 @app.get("/api/status")
 async def get_status(username: str = Depends(get_current_username)) -> Dict[str, Any]:
     global _status_cache
@@ -163,6 +179,8 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
                 except Exception:
                     pass
             slot_info = next((s for s in bot_instance.slot_manager.get_active_slots() if s['symbol'] == sym), {})
+            base_sym: str = slot_info.get("base_asset", sym)
+            base_price: float = _get_cached_base_price(base_sym) if base_sym != sym else 0.0
             positions_list.append({
                 "symbol": sym,
                 "quantity": pos.get("quantity", 0.0),
@@ -173,17 +191,26 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
                 "return_rate": pos.get("return_rate", 0.0),
                 "pchs_amt": pos.get("pchs_amt", 0.0),
                 "is_leveraged": slot_info.get("is_leveraged", False),
-                "base_asset": slot_info.get("base_asset", sym),
+                "base_asset": base_sym,
+                "base_price": base_price,
             })
 
         for sym in current_symbols:
             if sym not in held_symbols:
                 slot_info = next((s for s in bot_instance.slot_manager.get_active_slots() if s['symbol'] == sym), {})
+                cur_price_fallback: float = 0.0
+                try:
+                    cur_price_fallback = bot_instance.api.get_current_price(sym)
+                except Exception:
+                    pass
+                base_sym_fb: str = slot_info.get("base_asset", sym)
+                base_price_fb: float = _get_cached_base_price(base_sym_fb) if base_sym_fb != sym else 0.0
                 positions_list.append({
                     "symbol": sym, "quantity": 0.0, "avg_price": 0.0,
-                    "current_price": 0.0, "return_rate": 0.0,
+                    "current_price": cur_price_fallback, "return_rate": 0.0,
                     "is_leveraged": slot_info.get("is_leveraged", False),
-                    "base_asset": slot_info.get("base_asset", sym),
+                    "base_asset": base_sym_fb,
+                    "base_price": base_price_fb,
                 })
 
         slot_order: Dict[str, int] = {s['symbol']: i for i, s in enumerate(bot_instance.slot_manager.get_active_slots())}
