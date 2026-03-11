@@ -886,6 +886,43 @@ async def search_ticker(symbol: str = "", username: str = Depends(get_current_us
     return bot_instance.search_ticker(symbol)
 
 
+_autocomplete_cache: Dict[str, Any] = {}
+
+@app.get("/api/autocomplete")
+async def autocomplete_ticker(q: str = "", username: str = Depends(get_current_username)) -> Dict[str, Any]:
+    import yfinance as yf
+    query: str = q.strip().upper()
+    if len(query) < 1:
+        return {"results": []}
+
+    now: float = time.time()
+    cached = _autocomplete_cache.get(query)
+    if cached and (now - cached["ts"]) < 600:
+        return cached["data"]
+
+    try:
+        search = yf.Search(query, max_results=8)
+        results: list = []
+        for item in search.quotes:
+            exchange: str = item.get("exchange", "")
+            quote_type: str = item.get("quoteType", "")
+            if quote_type not in ("EQUITY", "ETF"):
+                continue
+            if any(x in exchange for x in ("PNK", "OTC")):
+                continue
+            results.append({
+                "symbol": item.get("symbol", ""),
+                "name": item.get("shortname", item.get("longname", "")),
+                "exchange": exchange,
+                "type": quote_type,
+            })
+        data: Dict[str, Any] = {"results": results[:8]}
+        _autocomplete_cache[query] = {"data": data, "ts": now}
+        return data
+    except Exception:
+        return {"results": []}
+
+
 @app.post("/api/start")
 async def start_bot(username: str = Depends(get_current_username)) -> Dict[str, str]:
     global bot_thread, bot_instance

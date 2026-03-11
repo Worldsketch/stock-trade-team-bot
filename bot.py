@@ -1034,6 +1034,46 @@ class TradingBot:
                     if api_return != 0.0:
                         self.positions.loc[idx, 'return_rate'] = api_return
 
+        self._auto_remove_empty_slots()
+
+    def _auto_remove_empty_slots(self) -> None:
+        """보유 수량이 0인 슬롯을 자동 제거 (추가 후 10분 경과 조건)"""
+        now: datetime = datetime.now()
+        api_symbols: Set[str] = set()
+        if not self.positions.empty:
+            held: pd.DataFrame = self.positions[self.positions['quantity'] > 0]
+            api_symbols = set(held['symbol'].tolist())
+
+        to_remove: List[str] = []
+        for slot in self.slot_manager.get_active_slots():
+            sym: str = slot['symbol']
+            if sym in api_symbols:
+                continue
+            added_at_str: str = slot.get('added_at', '')
+            if not added_at_str:
+                continue
+            try:
+                added_at: datetime = datetime.fromisoformat(added_at_str)
+            except (ValueError, TypeError):
+                continue
+            elapsed_min: float = (now - added_at).total_seconds() / 60
+            if elapsed_min >= 10:
+                to_remove.append(sym)
+
+        for sym in to_remove:
+            self.slot_manager.remove_slot(sym)
+            self.is_uptrend.pop(sym, None)
+            self.is_rsi_oversold.pop(sym, None)
+            self.prev_close.pop(sym, None)
+            self.hwm.pop(sym, None)
+            self.daily_state.pop(sym, None)
+            self.log(f"🗑️ [자동 정리] {sym} 보유 0주 → 슬롯 자동 제거", send_tg=True)
+
+        if to_remove:
+            self._save_hwm()
+            self._save_daily_state()
+            self._rebuild_positions_df()
+
     def fetch_market_data(self) -> None:
         self.sync_positions()
         if self.positions.empty:
