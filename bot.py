@@ -365,7 +365,7 @@ class TradingBot:
         symbol = symbol.upper().strip()
         now_et: datetime = datetime.now(ZoneInfo("America/New_York"))
         if not self.is_regular_market_open(now_et):
-            return {"success": False, "message": "정규장 시간(23:30~06:00 KST)에만 종목을 추가할 수 있습니다."}
+            return {"success": False, "message": "정규장 시간에만 종목을 추가할 수 있습니다."}
         if self.slot_manager.is_full():
             return {"success": False, "message": f"슬롯이 가득 찼습니다. (최대 {self.slot_manager.max_slots}개)"}
         if self.slot_manager.has_symbol(symbol):
@@ -1312,4 +1312,6 @@ class TradingBot:
             "slots": self.slot_manager.get_active_slots(),
             "max_slots": self.slot_manager.max_slots,
             "market_open": self.is_regular_market_open(now_et),
+            "is_dst": bool(now_et.dst()),
+            "et_time": now_et.strftime("%H:%M"),
         }
