@@ -981,7 +981,11 @@ class TradingBot:
 
     def sync_positions(self) -> None:
         data: Dict[str, Any] = self.api.get_balance_and_positions()
-        self.last_usd_balance = data["usd_balance"]
+        new_usd: float = data["usd_balance"]
+        if new_usd <= 0 and self.last_usd_balance > 100:
+            self.log(f"⚠️ [API 이상] USD 예수금 $0 반환 (기존 ${self.last_usd_balance:,.2f} 유지)", send_tg=False)
+        else:
+            self.last_usd_balance = new_usd
 
         api_exrt: float = data.get("exchange_rate", 0.0)
         if api_exrt > 0:
@@ -993,9 +997,15 @@ class TradingBot:
         else:
             self.last_krw_balance = self.last_usd_balance * self.exchange_rate
 
-        self.tot_evlu_pfls = data.get("tot_evlu_pfls", 0.0)
-        self.tot_pchs_amt = data.get("tot_pchs_amt", 0.0)
-        self.tot_stck_evlu = data.get("tot_stck_evlu", 0.0)
+        new_evlu_pfls: float = data.get("tot_evlu_pfls", 0.0)
+        new_pchs_amt: float = data.get("tot_pchs_amt", 0.0)
+        new_stck_evlu: float = data.get("tot_stck_evlu", 0.0)
+        if new_stck_evlu <= 0 and self.tot_stck_evlu > 100 and len(self.symbols) > 0:
+            self.log(f"⚠️ [API 이상] 주식 평가액 $0 반환 (기존 ${self.tot_stck_evlu:,.2f} 유지)", send_tg=False)
+        else:
+            self.tot_evlu_pfls = new_evlu_pfls
+            self.tot_pchs_amt = new_pchs_amt
+            self.tot_stck_evlu = new_stck_evlu
 
         current_symbols: List[str] = self.symbols
         if self.positions.empty or set(self.positions['symbol'].tolist()) != set(current_symbols):
