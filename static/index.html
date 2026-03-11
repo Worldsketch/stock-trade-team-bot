@@ -184,14 +184,7 @@
                             <button onclick="setChartPeriod('6mo','1d')" data-period="6mo" class="chart-period-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">6개월</button>
                             <button onclick="setChartPeriod('1y','1d')" data-period="1y" class="chart-period-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">1년</button>
                         </div>
-                        <div id="chartBtnGroup" class="flex bg-slate-900/60 rounded-lg p-0.5 gap-0.5">
-                            <button onclick="changeChart('NVDL')" data-symbol="NVDL" class="chart-btn active px-2.5 py-1 text-[11px] font-medium rounded-md transition-all">NVDL</button>
-                            <button onclick="changeChart('TSLL')" data-symbol="TSLL" class="chart-btn px-2.5 py-1 text-[11px] font-medium rounded-md transition-all">TSLL</button>
-                            <button onclick="changeChart('TQQQ')" data-symbol="TQQQ" class="chart-btn px-2.5 py-1 text-[11px] font-medium rounded-md transition-all">TQQQ</button>
-                            <span class="w-px h-3.5 bg-slate-600 self-center mx-0.5"></span>
-                            <button onclick="changeChart('NVDA')" data-symbol="NVDA" class="chart-btn px-2.5 py-1 text-[11px] font-medium rounded-md transition-all">NVDA</button>
-                            <button onclick="changeChart('TSLA')" data-symbol="TSLA" class="chart-btn px-2.5 py-1 text-[11px] font-medium rounded-md transition-all">TSLA</button>
-                            <button onclick="changeChart('QQQ')" data-symbol="QQQ" class="chart-btn px-2.5 py-1 text-[11px] font-medium rounded-md transition-all">QQQ</button>
+                        <div id="chartBtnGroup" class="flex bg-slate-900/60 rounded-lg p-0.5 gap-0.5 flex-wrap">
                         </div>
                     </div>
                 </div>
@@ -201,10 +194,13 @@
             </div>
 
             <div class="bg-slate-800 rounded-xl border border-slate-700 shadow-sm overflow-hidden">
-                <div class="px-5 py-3.5 border-b border-slate-700 bg-slate-850">
+                <div class="px-5 py-3.5 border-b border-slate-700 bg-slate-850 flex items-center justify-between">
                     <h2 class="text-base font-semibold text-white flex items-center gap-2">
-                        <i class="fa-solid fa-cubes text-blue-400"></i> 보유 포지션
+                        <i class="fa-solid fa-cubes text-blue-400"></i> 보유 포지션 <span class="text-xs text-slate-500 font-normal">(<span id="slotCount">0</span>/<span id="slotMax">6</span> 슬롯)</span>
                     </h2>
+                    <button onclick="openAddSlotModal()" id="addSlotBtn" class="flex items-center gap-1.5 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-500/30 transition-colors">
+                        <i class="fa-solid fa-plus text-[10px]"></i> 슬롯 추가
+                    </button>
                 </div>
                 <div class="p-4 sm:p-5" id="positionsContainer">
                     <p class="text-center text-slate-500 py-8">데이터를 불러오는 중입니다...</p>
@@ -301,9 +297,6 @@
                         </select>
                         <select id="tradeSymbolFilter" onchange="renderTrades()" class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none">
                             <option value="all">전체 종목</option>
-                            <option value="NVDL">NVDL</option>
-                            <option value="TSLL">TSLL</option>
-                            <option value="TQQQ">TQQQ</option>
                         </select>
                         <button onclick="fetchTradeHistory()" class="text-xs text-slate-400 hover:text-white transition-colors">
                             <i class="fa-solid fa-rotate-right mr-1"></i>새로고침
@@ -430,13 +423,89 @@
                 </div>
             </div>
         </div>
+        <div id="addSlotModal" class="fixed inset-0 bg-slate-900/90 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+            <div class="bg-slate-800 rounded-2xl border border-slate-700 shadow-2xl max-w-lg w-full mx-4 overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-700/50 flex items-center justify-between">
+                    <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-plus-circle text-emerald-400"></i> 종목 추가
+                    </h3>
+                    <button onclick="closeAddSlotModal()" class="text-slate-400 hover:text-white transition-colors">
+                        <i class="fa-solid fa-xmark text-lg"></i>
+                    </button>
+                </div>
+                <div class="px-6 py-5 space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-2">티커 검색</label>
+                        <div class="flex gap-2">
+                            <input type="text" id="tickerSearchInput" placeholder="예: NVDL, AAPL, SOXL" maxlength="10"
+                                class="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white uppercase focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                                onkeydown="if(event.key==='Enter')searchTicker()">
+                            <button onclick="searchTicker()" class="bg-blue-600 hover:bg-blue-500 text-white font-medium px-4 rounded-lg transition-colors">
+                                <i class="fa-solid fa-search"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <p class="text-xs font-semibold text-slate-500 mb-2">인기 종목</p>
+                        <div class="flex flex-wrap gap-2" id="popularTickers">
+                            <button onclick="quickSearch('NVDL')" class="px-3 py-1.5 rounded-lg bg-emerald-600/15 text-emerald-400 text-xs font-semibold border border-emerald-500/20 hover:bg-emerald-600/30 transition-colors">NVDL <span class="text-slate-500">2x NVDA</span></button>
+                            <button onclick="quickSearch('TSLL')" class="px-3 py-1.5 rounded-lg bg-rose-600/15 text-rose-400 text-xs font-semibold border border-rose-500/20 hover:bg-rose-600/30 transition-colors">TSLL <span class="text-slate-500">2x TSLA</span></button>
+                            <button onclick="quickSearch('TQQQ')" class="px-3 py-1.5 rounded-lg bg-blue-600/15 text-blue-400 text-xs font-semibold border border-blue-500/20 hover:bg-blue-600/30 transition-colors">TQQQ <span class="text-slate-500">3x QQQ</span></button>
+                            <button onclick="quickSearch('SOXL')" class="px-3 py-1.5 rounded-lg bg-purple-600/15 text-purple-400 text-xs font-semibold border border-purple-500/20 hover:bg-purple-600/30 transition-colors">SOXL <span class="text-slate-500">3x 반도체</span></button>
+                            <button onclick="quickSearch('UPRO')" class="px-3 py-1.5 rounded-lg bg-amber-600/15 text-amber-400 text-xs font-semibold border border-amber-500/20 hover:bg-amber-600/30 transition-colors">UPRO <span class="text-slate-500">3x S&P500</span></button>
+                            <button onclick="quickSearch('TECL')" class="px-3 py-1.5 rounded-lg bg-cyan-600/15 text-cyan-400 text-xs font-semibold border border-cyan-500/20 hover:bg-cyan-600/30 transition-colors">TECL <span class="text-slate-500">3x IT</span></button>
+                        </div>
+                    </div>
+                    <div id="tickerSearchResult" class="hidden">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="marketClosedModal" class="fixed inset-0 bg-slate-900/90 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+            <div class="bg-slate-800 rounded-2xl border border-slate-700 shadow-2xl max-w-sm w-full mx-4 overflow-hidden">
+                <div class="px-6 py-8 text-center">
+                    <div class="w-14 h-14 rounded-full bg-amber-500/15 flex items-center justify-center mx-auto mb-4">
+                        <i class="fa-solid fa-clock text-amber-400 text-2xl"></i>
+                    </div>
+                    <h3 class="text-lg font-bold text-white mb-2">장 마감 중</h3>
+                    <p class="text-sm text-slate-400 mb-1">정규장 시간에만 종목을 추가할 수 있습니다.</p>
+                    <p class="text-xs text-slate-500 mb-5">한국 시간 23:30 ~ 06:00 (서머타임 기준)</p>
+                    <button onclick="closeMarketClosedModal()" class="w-full bg-slate-700 hover:bg-slate-600 text-white font-medium py-2.5 rounded-xl transition-colors">확인</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="removeSlotModal" class="fixed inset-0 bg-slate-900/90 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+            <div class="bg-slate-800 rounded-2xl border border-slate-700 shadow-2xl max-w-md w-full mx-4 overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-700/50">
+                    <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-trash text-rose-400"></i> 슬롯 제거
+                    </h3>
+                </div>
+                <div class="px-6 py-5 space-y-4">
+                    <p class="text-slate-300 text-sm"><span id="removeSlotSymbol" class="font-bold text-white"></span>을(를) 슬롯에서 제거하시겠습니까?</p>
+                    <div class="space-y-2">
+                        <button onclick="executeRemoveSlot(true)" class="w-full bg-rose-600 hover:bg-rose-500 text-white font-bold py-3 rounded-xl transition-colors">
+                            <i class="fa-solid fa-coins mr-2"></i>전량 매도 후 제거
+                        </button>
+                        <button onclick="executeRemoveSlot(false)" class="w-full bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium py-3 rounded-xl transition-colors">
+                            <i class="fa-solid fa-eye-slash mr-2"></i>매도 없이 감시 중단
+                        </button>
+                        <button onclick="closeRemoveSlotModal()" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-400 font-medium py-2.5 rounded-xl transition-colors border border-slate-600">
+                            취소
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </main>
 
     <script>
         let lwChart = null;
         let candleSeries = null;
         let volumeSeries = null;
-        let currentChartSymbol = 'NVDL';
+        let currentChartSymbol = '';
         let currentChartPeriod = '1d';
         let currentChartInterval = '5m';
         let showKrw = true;
@@ -444,6 +513,9 @@
         let allTrades = [];
         let soundEnabled = true;
         let lastSeenLog = '';
+        let currentSlots = [];
+        let maxSlots = 6;
+        let _removeTarget = '';
 
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/static/sw.js').catch(() => {});
@@ -596,8 +668,44 @@
             candleSeries.update({ time: now, open: pos.current_price, high: pos.current_price, low: pos.current_price, close: pos.current_price });
         }
 
+        function buildChartButtons(slots) {
+            const group = document.getElementById('chartBtnGroup');
+            if (!slots || slots.length === 0) {
+                group.innerHTML = '<span class="text-[11px] text-slate-500 px-2 py-1">슬롯에 종목을 추가하세요</span>';
+                return;
+            }
+            let html = '';
+            const syms = new Set();
+            const bases = new Set();
+            slots.forEach(s => { syms.add(s.symbol); if (s.base_asset && s.base_asset !== s.symbol) bases.add(s.base_asset); });
+            syms.forEach(sym => {
+                const isActive = sym === currentChartSymbol ? ' active' : '';
+                html += `<button onclick="changeChart('${sym}')" data-symbol="${sym}" class="chart-btn${isActive} px-2.5 py-1 text-[11px] font-medium rounded-md transition-all">${sym}</button>`;
+            });
+            if (bases.size > 0) {
+                html += '<span class="w-px h-3.5 bg-slate-600 self-center mx-0.5"></span>';
+                bases.forEach(base => {
+                    const isActive = base === currentChartSymbol ? ' active' : '';
+                    html += `<button onclick="changeChart('${base}')" data-symbol="${base}" class="chart-btn${isActive} px-2.5 py-1 text-[11px] font-medium rounded-md transition-all">${base}</button>`;
+                });
+            }
+            group.innerHTML = html;
+        }
+
+        function updateTradeSymbolFilter(slots) {
+            const sel = document.getElementById('tradeSymbolFilter');
+            const curVal = sel.value;
+            sel.innerHTML = '<option value="all">전체 종목</option>';
+            (slots || []).forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s.symbol;
+                opt.textContent = s.symbol;
+                if (s.symbol === curVal) opt.selected = true;
+                sel.appendChild(opt);
+            });
+        }
+
         initLwChart();
-        loadChartData('NVDL', '1d', '5m');
 
         function setCurrency(isKrw) {
             showKrw = isKrw;
@@ -659,17 +767,64 @@
             } catch (err) { console.error("Fetch error:", err); }
         }
 
-        const GLOW_MAP = { 'NVDL': 'glow-green', 'TSLL': 'glow-red', 'TQQQ': 'glow-blue' };
-        const BORDER_MAP = { 'NVDL': 'border-emerald-500/30', 'TSLL': 'border-rose-500/30', 'TQQQ': 'border-blue-500/30' };
-        const ICON_BG_MAP = { 'NVDL': 'bg-emerald-600', 'TSLL': 'bg-rose-600', 'TQQQ': 'bg-blue-600' };
-        const ABBR_MAP = { 'NVDL': 'NV', 'TSLL': 'TS', 'TQQQ': 'TQ' };
-        const LEVERAGE_MAP = { 'NVDL': '2x NVDA', 'TSLL': '2x TSLA', 'TQQQ': '3x QQQ' };
+        const SLOT_COLORS = [
+            { glow: 'glow-green', border: 'border-emerald-500/30', bg: 'bg-emerald-600', text: 'text-emerald-400' },
+            { glow: 'glow-red', border: 'border-rose-500/30', bg: 'bg-rose-600', text: 'text-rose-400' },
+            { glow: 'glow-blue', border: 'border-blue-500/30', bg: 'bg-blue-600', text: 'text-blue-400' },
+            { glow: '', border: 'border-purple-500/30', bg: 'bg-purple-600', text: 'text-purple-400' },
+            { glow: '', border: 'border-amber-500/30', bg: 'bg-amber-600', text: 'text-amber-400' },
+            { glow: '', border: 'border-cyan-500/30', bg: 'bg-cyan-600', text: 'text-cyan-400' },
+        ];
+
+        const SYMBOL_COLOR_MAP = {
+            'NVDL': 0, 'TSLL': 1, 'TQQQ': 2,
+            'SOXL': 3, 'UPRO': 4, 'TECL': 5,
+        };
+        function getSlotColor(symbol) {
+            if (symbol in SYMBOL_COLOR_MAP) return SLOT_COLORS[SYMBOL_COLOR_MAP[symbol]];
+            const idx = currentSlots.findIndex(s => s.symbol === symbol);
+            const usedIndices = new Set(currentSlots.map(s => SYMBOL_COLOR_MAP[s.symbol]).filter(i => i !== undefined));
+            let colorIdx = 0;
+            for (let i = 0; i < SLOT_COLORS.length; i++) {
+                if (!usedIndices.has(i)) { colorIdx = i; break; }
+            }
+            return SLOT_COLORS[idx >= 0 ? (colorIdx + idx) % SLOT_COLORS.length : 0];
+        }
+
+        function getAbbr(symbol) { return symbol.slice(0, 2).toUpperCase(); }
+
+        function getLeverageText(pos) {
+            if (pos.is_leveraged && pos.base_asset && pos.base_asset !== pos.symbol) return pos.base_asset;
+            return '';
+        }
 
         function fmtUsd(v) { return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}); }
         function fmtKrw(v) { return Math.round(v).toLocaleString() + '원'; }
         function retColor(v) { return v > 0 ? 'text-emerald-400' : (v < 0 ? 'text-rose-400' : 'text-slate-400'); }
 
         function updateUI(data) {
+            if (data.slots) {
+                const prevLen = currentSlots.length;
+                currentSlots = data.slots;
+                maxSlots = data.max_slots || 6;
+                document.getElementById('slotCount').textContent = currentSlots.length;
+                document.getElementById('slotMax').textContent = maxSlots;
+                const addBtn = document.getElementById('addSlotBtn');
+                const marketOpen = data.market_open === true;
+                if (currentSlots.length >= maxSlots || !marketOpen) {
+                    addBtn.classList.add('opacity-50', 'pointer-events-none');
+                    addBtn.title = !marketOpen ? '정규장 시간에만 추가 가능' : '슬롯 가득 참';
+                } else {
+                    addBtn.classList.remove('opacity-50', 'pointer-events-none');
+                    addBtn.title = '종목 추가';
+                }
+                buildChartButtons(currentSlots);
+                updateTradeSymbolFilter(currentSlots);
+                if (!currentChartSymbol && currentSlots.length > 0) {
+                    currentChartSymbol = currentSlots[0].symbol;
+                    loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval);
+                }
+            }
             const rate = data.exchange_rate || 1400;
             const usdBal = data.usd_balance || 0;
             const krwBal = data.krw_balance || 0;
@@ -765,11 +920,12 @@
                     sumInvested += pchsUsd; sumCurrent += evalUsd; sumPl += plUsd;
                     const rateColor = retColor(retRate);
                     const rateSign = isPos ? '+' : '';
-                    const glowClass = GLOW_MAP[pos.symbol] || '';
-                    const borderClass = BORDER_MAP[pos.symbol] || 'border-slate-600';
-                    const iconBg = ICON_BG_MAP[pos.symbol] || 'bg-slate-600';
-                    const abbr = ABBR_MAP[pos.symbol] || pos.symbol.slice(0, 2);
-                    const leverageText = LEVERAGE_MAP[pos.symbol] || '';
+                    const sc = getSlotColor(pos.symbol);
+                    const glowClass = sc.glow || '';
+                    const borderClass = sc.border || 'border-slate-600';
+                    const iconBg = sc.bg || 'bg-slate-600';
+                    const abbr = getAbbr(pos.symbol);
+                    const leverageText = getLeverageText(pos);
                     const retBadgeBg = isPos ? 'bg-emerald-500/15 text-emerald-400' : (retRate < 0 ? 'bg-rose-500/15 text-rose-400' : 'bg-slate-700 text-slate-400');
                     const evalDisplay = showKrw ? fmtKrw(evalUsd * rate) : fmtUsd(evalUsd);
                     const avgDisplay = showKrw ? fmtKrw(pos.avg_price * rate) : fmtUsd(pos.avg_price);
@@ -844,7 +1000,11 @@
                 dpAmtEl.className = `text-xs font-medium mt-1.5 ${retColor(dailyPnl)}`;
                 document.getElementById('portfolioSummary').style.display = '';
             } else {
-                container.innerHTML = '<p class="text-center text-slate-500 py-8">보유 포지션이 없습니다.</p>';
+                container.innerHTML = `
+                    <div class="text-center py-10">
+                        <i class="fa-solid fa-cubes text-slate-700 text-3xl mb-3"></i>
+                        <p class="text-slate-500 text-sm">등록된 종목이 없습니다. 우상단 <strong class="text-emerald-400">슬롯 추가</strong> 버튼으로 추가하세요.</p>
+                    </div>`;
                 document.getElementById('portfolioSummary').style.display = 'none';
             }
 
@@ -928,8 +1088,9 @@
             const profitPct = avgPrice > 0 ? ((curPrice - avgPrice) / avgPrice * 100) : 0;
 
             const badge = document.getElementById('sellModalBadge');
-            badge.textContent = ABBR_MAP[symbol] || symbol.slice(0, 2);
-            badge.className = `w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black text-white ${ICON_BG_MAP[symbol] || 'bg-slate-600'}`;
+            const sellSc = getSlotColor(symbol);
+            badge.textContent = getAbbr(symbol);
+            badge.className = `w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black text-white ${sellSc.bg || 'bg-slate-600'}`;
 
             document.getElementById('sellModalTitle').textContent = symbol;
             document.getElementById('sellModalPercent').textContent = `${percent}%`;
@@ -1123,7 +1284,7 @@
                         </div>
                         <div>
                             <div class="flex items-center gap-2">
-                                <span class="w-5 h-5 rounded ${ICON_BG_MAP[t.symbol] || 'bg-slate-600'} flex items-center justify-center text-[9px] font-black text-white leading-none">${ABBR_MAP[t.symbol] || t.symbol.slice(0,2)}</span>
+                                <span class="w-5 h-5 rounded ${getSlotColor(t.symbol).bg || 'bg-slate-600'} flex items-center justify-center text-[9px] font-black text-white leading-none">${getAbbr(t.symbol)}</span>
                                 <span class="text-sm font-bold text-white">${t.symbol}</span>
                                 <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${sideColor} ${sideBg}">${t.side}</span>
                             </div>
@@ -1216,9 +1377,9 @@
             html += '<h3 class="text-sm font-semibold text-emerald-400 mb-3 flex items-center gap-2"><i class="fa-solid fa-cart-shopping"></i> 매수 전략</h3>';
             html += '<div class="bg-slate-850 rounded-lg p-4 border border-slate-700/50">';
             html += mkRow('기본 적립 비율', `총 자산의 ${(p.base_buy_ratio*100).toFixed(1)}%`);
-            html += mkRow('-2% DCA 비율', `총 자산의 ${(p.w2_ratio*100).toFixed(1)}%`);
-            html += mkRow('-4% DCA 비율', `총 자산의 ${(p.w4_ratio*100).toFixed(1)}%`);
-            html += mkRow('-8% DCA 비율', `총 자산의 ${(p.w8_ratio*100).toFixed(1)}%`);
+            html += mkRow(`${(p.dca_2_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w2_ratio*100).toFixed(1)}%`);
+            html += mkRow(`${(p.dca_4_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w4_ratio*100).toFixed(1)}%`);
+            html += mkRow(`${(p.dca_8_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w8_ratio*100).toFixed(1)}%`);
             html += mkRow('RSI 과매도 보너스', `총 자산의 ${(p.w4_ratio*100).toFixed(1)}% (RSI<30)`);
             html += mkRow('매수 지정가', '현재가 +0.5%');
             html += '</div></div>';
@@ -1413,15 +1574,200 @@
             }
         }
 
+        function openAddSlotModal() {
+            const marketOpen = lastData?.market_open === true;
+            if (!marketOpen) {
+                document.getElementById('marketClosedModal').classList.remove('hidden');
+                return;
+            }
+            document.getElementById('addSlotModal').classList.remove('hidden');
+            document.getElementById('tickerSearchInput').value = '';
+            document.getElementById('tickerSearchResult').classList.add('hidden');
+            document.getElementById('tickerSearchInput').focus();
+        }
+        function closeMarketClosedModal() {
+            document.getElementById('marketClosedModal').classList.add('hidden');
+        }
+        function closeAddSlotModal() {
+            document.getElementById('addSlotModal').classList.add('hidden');
+        }
+        function quickSearch(sym) {
+            document.getElementById('tickerSearchInput').value = sym;
+            searchTicker();
+        }
+        async function searchTicker() {
+            const sym = document.getElementById('tickerSearchInput').value.trim().toUpperCase();
+            if (!sym) return;
+            const auth = getAuthHeader();
+            if (!auth) { showLogin(); return; }
+            const resultDiv = document.getElementById('tickerSearchResult');
+            resultDiv.classList.remove('hidden');
+            resultDiv.innerHTML = '<div class="flex items-center justify-center py-4"><i class="fa-solid fa-spinner fa-spin text-slate-400 mr-2"></i><span class="text-sm text-slate-400">검색 중...</span></div>';
+            try {
+                const res = await fetch(`/api/search-ticker?symbol=${sym}`, { headers: { 'Authorization': auth } });
+                const data = await res.json();
+                if (!data.found) {
+                    resultDiv.innerHTML = `<div class="bg-rose-500/10 rounded-xl p-4 text-center"><p class="text-sm text-rose-400">${data.message || '종목을 찾을 수 없습니다.'}</p></div>`;
+                    return;
+                }
+                const levBadge = data.is_leveraged ? `<span class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 text-[10px] font-semibold">${data.base_asset} 레버리지</span>` : '';
+                const tradeStatus = data.tradeable ? '<span class="text-emerald-400 text-xs"><i class="fa-solid fa-check-circle mr-1"></i>거래 가능</span>' : '<span class="text-rose-400 text-xs"><i class="fa-solid fa-xmark-circle mr-1"></i>거래 불가</span>';
+                const canAdd = !data.already_added && data.tradeable && currentSlots.length < maxSlots;
+                let statusMsg = '';
+                if (data.already_added) statusMsg = '이미 추가된 종목';
+                else if (!data.tradeable) statusMsg = '거래 불가';
+                else if (currentSlots.length >= maxSlots) statusMsg = '슬롯 가득 참';
+                const price = data.price || 0;
+                window._addSlotSymbol = data.symbol;
+                window._addSlotPrice = price;
+
+                resultDiv.innerHTML = `
+                    <div class="bg-slate-900/60 rounded-xl p-4 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-white font-bold text-lg">${data.symbol}</p>
+                                <p class="text-xs text-slate-400">${data.name}</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-white font-bold">$${price.toFixed(2)}</p>
+                                ${tradeStatus}
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2 flex-wrap">
+                            ${levBadge}
+                            <span class="text-[10px] text-slate-500">${data.exchange || ''} · ${data.currency || 'USD'}</span>
+                        </div>
+                        ${canAdd ? `
+                        <div>
+                            <p class="text-xs font-semibold text-slate-400 mb-2">매수 비율 (총자산 대비)</p>
+                            <div class="grid grid-cols-4 gap-2" id="buyPercentBtns">
+                                <button onclick="selectBuyPercent(1)" class="buy-pct-btn bg-slate-700 hover:bg-emerald-600/30 text-slate-300 hover:text-emerald-400 text-sm font-semibold py-2.5 rounded-lg border border-slate-600 hover:border-emerald-500/30 transition-all">1%</button>
+                                <button onclick="selectBuyPercent(3)" class="buy-pct-btn bg-slate-700 hover:bg-emerald-600/30 text-slate-300 hover:text-emerald-400 text-sm font-semibold py-2.5 rounded-lg border border-slate-600 hover:border-emerald-500/30 transition-all">3%</button>
+                                <button onclick="selectBuyPercent(5)" class="buy-pct-btn bg-slate-700 hover:bg-emerald-600/30 text-slate-300 hover:text-emerald-400 text-sm font-semibold py-2.5 rounded-lg border border-slate-600 hover:border-emerald-500/30 transition-all">5%</button>
+                                <button onclick="selectBuyPercent(10)" class="buy-pct-btn bg-slate-700 hover:bg-emerald-600/30 text-slate-300 hover:text-emerald-400 text-sm font-semibold py-2.5 rounded-lg border border-slate-600 hover:border-emerald-500/30 transition-all">10%</button>
+                            </div>
+                            <div id="buyEstimate" class="mt-2 hidden bg-slate-800/80 rounded-lg px-3 py-2 flex items-center justify-between">
+                                <span class="text-xs text-slate-400">예상</span>
+                                <span id="buyEstimateText" class="text-sm font-semibold text-white"></span>
+                            </div>
+                        </div>
+                        <button onclick="addSlot('${data.symbol}')" id="addSlotConfirmBtn" disabled class="w-full font-bold py-3 rounded-xl transition-colors bg-slate-600 text-slate-400 cursor-not-allowed">
+                            <i class="fa-solid fa-cart-plus mr-1.5"></i>비율을 선택하세요
+                        </button>
+                        ` : `
+                        <button disabled class="w-full font-bold py-3 rounded-xl bg-slate-600 text-slate-400 cursor-not-allowed">
+                            <i class="fa-solid fa-ban mr-1.5"></i>${statusMsg}
+                        </button>`}
+                    </div>`;
+            } catch(e) {
+                resultDiv.innerHTML = '<div class="bg-rose-500/10 rounded-xl p-4 text-center"><p class="text-sm text-rose-400">검색 요청 실패</p></div>';
+            }
+        }
+
+        let _selectedBuyPercent = 0;
+        function selectBuyPercent(pct) {
+            _selectedBuyPercent = pct;
+            document.querySelectorAll('.buy-pct-btn').forEach(btn => {
+                btn.classList.remove('bg-emerald-600/30', 'text-emerald-400', 'border-emerald-500/30', 'ring-1', 'ring-emerald-500');
+                btn.classList.add('bg-slate-700', 'text-slate-300', 'border-slate-600');
+            });
+            const btns = document.querySelectorAll('.buy-pct-btn');
+            const idx = [1,3,5,10].indexOf(pct);
+            if (idx >= 0 && btns[idx]) {
+                btns[idx].classList.remove('bg-slate-700', 'text-slate-300', 'border-slate-600');
+                btns[idx].classList.add('bg-emerald-600/30', 'text-emerald-400', 'border-emerald-500/30', 'ring-1', 'ring-emerald-500');
+            }
+            const price = window._addSlotPrice || 0;
+            const rate = lastData?.exchange_rate || 1400;
+            const totalAssets = lastData ? (lastData.total_eval || 0) : 0;
+            const estAmount = totalAssets * (pct / 100);
+            const estQty = price > 0 ? Math.floor(estAmount / price) : 0;
+            const estDiv = document.getElementById('buyEstimate');
+            const estText = document.getElementById('buyEstimateText');
+            if (estDiv && estText) {
+                estDiv.classList.remove('hidden');
+                const amtDisplay = showKrw ? `${Math.round(estAmount * rate).toLocaleString()}원` : `$${estAmount.toLocaleString('en-US', {maximumFractionDigits:0})}`;
+                estText.textContent = `${estQty}주 · ${amtDisplay}`;
+            }
+            const confirmBtn = document.getElementById('addSlotConfirmBtn');
+            if (confirmBtn) {
+                confirmBtn.disabled = false;
+                confirmBtn.className = 'w-full font-bold py-3 rounded-xl transition-colors bg-emerald-600 hover:bg-emerald-500 text-white';
+                confirmBtn.innerHTML = `<i class="fa-solid fa-cart-plus mr-1.5"></i>${pct}% 매수 (${estQty}주)`;
+            }
+        }
+
+        async function addSlot(symbol) {
+            const auth = getAuthHeader();
+            if (!auth) { showLogin(); return; }
+            const pct = _selectedBuyPercent;
+            const resultDiv = document.getElementById('tickerSearchResult');
+            resultDiv.innerHTML = `<div class="flex items-center justify-center py-4"><i class="fa-solid fa-spinner fa-spin text-emerald-400 mr-2"></i><span class="text-sm text-emerald-400">슬롯 추가 중... (${pct}% 매수 주문)</span></div>`;
+            try {
+                const res = await fetch('/api/slots/add', {
+                    method: 'POST',
+                    headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol, buy_percent: pct })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`${symbol} 슬롯 추가 완료!`);
+                    _selectedBuyPercent = 0;
+                    closeAddSlotModal();
+                    fetchStatus();
+                } else {
+                    resultDiv.innerHTML = `<div class="bg-rose-500/10 rounded-xl p-4 text-center"><p class="text-sm text-rose-400">${data.message}</p></div>`;
+                }
+            } catch(e) {
+                resultDiv.innerHTML = '<div class="bg-rose-500/10 rounded-xl p-4 text-center"><p class="text-sm text-rose-400">슬롯 추가 요청 실패</p></div>';
+            }
+        }
+
+        function openRemoveSlotModal(symbol) {
+            _removeTarget = symbol;
+            document.getElementById('removeSlotSymbol').textContent = symbol;
+            document.getElementById('removeSlotModal').classList.remove('hidden');
+        }
+        function closeRemoveSlotModal() {
+            document.getElementById('removeSlotModal').classList.add('hidden');
+            _removeTarget = '';
+        }
+        async function executeRemoveSlot(sellAll) {
+            if (!_removeTarget) return;
+            const auth = getAuthHeader();
+            if (!auth) { showLogin(); return; }
+            closeRemoveSlotModal();
+            showToast(`${_removeTarget} 슬롯 제거 처리 중...`);
+            try {
+                const res = await fetch('/api/slots/remove', {
+                    method: 'POST',
+                    headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: _removeTarget, sell_all: sellAll })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    if (_removeTarget === currentChartSymbol) {
+                        currentChartSymbol = '';
+                    }
+                    showToast(data.message);
+                    fetchStatus();
+                } else {
+                    showToast(data.message, true);
+                }
+            } catch(e) {
+                showToast('슬롯 제거 요청 실패', true);
+            }
+        }
+
         fetchStatus();
         fetchAiReport();
         setInterval(fetchStatus, 3000);
         setInterval(fetchPendingOrders, 10000);
-        setInterval(() => { loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval); }, 30000);
+        setInterval(() => { if (currentChartSymbol) loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval); }, 30000);
     </script>
 
     <footer class="text-center py-8 space-y-1">
-        <p class="text-slate-500 text-sm font-semibold tracking-wide">Stock Trade Bot v1.1</p>
+        <p class="text-slate-500 text-sm font-semibold tracking-wide">Stock Trade Bot v2.0</p>
         <p class="text-slate-600 text-xs font-medium tracking-wider">Created by MUZE</p>
     </footer>
 </body>

@@ -35,15 +35,36 @@ class KoreaInvestmentAPI:
         self.token_expired_at: float = 0.0
         self._token_fail_ts: float = 0.0
 
-        self._nyse_symbols: set = {"SPY", "DIA", "UPRO", "SPXL", "BRK.B", "JNJ", "V", "WMT", "BAC", "KO"}
-        self._amex_symbols: set = {"GLD", "SLV", "XLE", "XLF"}
+        self._exchange_cache: Dict[str, str] = {}
+        self._EXCHANGE_MAP: Dict[str, str] = {"NAS": "NASD", "NYS": "NYSE", "AMS": "AMEX"}
 
     def _get_exchange_code(self, symbol: str, style: str = "short") -> str:
-        if symbol in self._nyse_symbols:
-            return "NYS" if style == "short" else "NYSE"
-        if symbol in self._amex_symbols:
-            return "AMS" if style == "short" else "AMEX"
-        return "NAS" if style == "short" else "NASD"
+        if symbol in self._exchange_cache:
+            short: str = self._exchange_cache[symbol]
+            return short if style == "short" else self._EXCHANGE_MAP.get(short, "NASD")
+        discovered: str = self._discover_exchange(symbol)
+        return discovered if style == "short" else self._EXCHANGE_MAP.get(discovered, "NASD")
+
+    def _discover_exchange(self, symbol: str) -> str:
+        """3개 거래소를 순회하며 유효한 거래소를 찾아 캐시합니다."""
+        self._ensure_token()
+        url: str = f"{self.base_url}/uapi/overseas-price/v1/quotations/price"
+        headers: Dict[str, str] = self.get_headers("HHDFS00000300")
+        for excd in ("NAS", "NYS", "AMS"):
+            try:
+                params: Dict[str, str] = {"AUTH": "", "EXCD": excd, "SYMB": symbol}
+                res = requests.get(url, headers=headers, params=params)
+                if res.status_code == 200:
+                    data = res.json()
+                    price = float(data.get("output", {}).get("last", 0))
+                    if price > 0:
+                        self._exchange_cache[symbol] = excd
+                        print(f"[거래소 탐색] {symbol} → {excd} (${price:.2f})")
+                        return excd
+            except Exception:
+                continue
+        self._exchange_cache[symbol] = "NAS"
+        return "NAS"
 
     @retry_api(max_retries=3)
     def _issue_token(self) -> None:
@@ -269,17 +290,18 @@ class KoreaInvestmentAPI:
         ord_dvsn: str = "00"
 
         headers: Dict[str, str] = self.get_headers(tr_id)
+        excg_cd: str = self._get_exchange_code(symbol, "long")
         payload: Dict[str, str] = {
             "CANO": self.account_no,
             "ACNT_PRDT_CD": self.account_code,
-            "OVRS_EXCG_CD": "NASD",
+            "OVRS_EXCG_CD": excg_cd,
             "PDNO": symbol,
             "ORD_QTY": str(int(quantity)),
             "OVRS_ORD_UNPR": formatted_price,
             "ORD_SVR_DVSN_CD": "0",
             "ORD_DVSN": ord_dvsn
         }
-        print(f"[주문 요청] {tr_id} | {symbol} {'매수' if is_buy else '매도'} {int(quantity)}주 @ ${formatted_price}")
+        print(f"[주문 요청] {tr_id} | {symbol} ({excg_cd}) {'매수' if is_buy else '매도'} {int(quantity)}주 @ ${formatted_price}")
         res = requests.post(url, headers=headers, json=payload)
         
         try:
@@ -350,7 +372,7 @@ class KoreaInvestmentAPI:
         payload: Dict[str, str] = {
             "CANO": self.account_no,
             "ACNT_PRDT_CD": self.account_code,
-            "OVRS_EXCG_CD": "NASD",
+            "OVRS_EXCG_CD": self._get_exchange_code(symbol, "long"),
             "PDNO": symbol,
             "ORGN_ODNO": order_no,
             "RVSE_CNCL_DVSN_CD": "02",

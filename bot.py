@@ -12,23 +12,91 @@ import pandas as pd
 
 from api import KoreaInvestmentAPI
 
+LEVERAGED_ETF_MAP: Dict[str, str] = {
+    'NVDL': 'NVDA', 'TSLL': 'TSLA', 'TQQQ': 'QQQ',
+    'SOXL': 'SOXX', 'UPRO': 'SPY', 'SPXL': 'SPY',
+    'TECL': 'XLK', 'FAS': 'XLF', 'LABU': 'XBI',
+    'TNA': 'IWM', 'UDOW': 'DIA', 'CURE': 'XLV',
+    'NAIL': 'ITB', 'DFEN': 'ITA', 'FNGU': 'NYFANG',
+    'AAPU': 'AAPL', 'MSFU': 'MSFT', 'AMZU': 'AMZN',
+    'GOOU': 'GOOG', 'METU': 'META', 'CONL': 'COIN',
+    'SQQQ': 'QQQ', 'SOXS': 'SOXX', 'SPXU': 'SPY',
+    'TECS': 'XLK', 'FAZ': 'XLF', 'TZA': 'IWM',
+    'WEBL': 'DJUSTC', 'BITX': 'BTC',
+}
+
+
+class SlotManager:
+    """최대 6개 슬롯의 동적 종목 관리를 담당합니다."""
+
+    def __init__(self, slots_file: str = "slots.json", max_slots: int = 6) -> None:
+        self.slots_file: str = slots_file
+        self.max_slots: int = max_slots
+        self.slots: List[Dict[str, Any]] = []
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            if os.path.exists(self.slots_file):
+                with open(self.slots_file, 'r', encoding='utf-8') as f:
+                    data: Dict[str, Any] = json.load(f)
+                    self.slots = data.get('slots', [])
+                    self.max_slots = data.get('max_slots', 6)
+        except Exception as e:
+            print(f"[슬롯 로드 오류] {e}")
+
+    def _save(self) -> None:
+        try:
+            with open(self.slots_file, 'w', encoding='utf-8') as f:
+                json.dump({'slots': self.slots, 'max_slots': self.max_slots}, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[슬롯 저장 오류] {e}")
+
+    def get_active_slots(self) -> List[Dict[str, Any]]:
+        return [s for s in self.slots if s.get('active', True)]
+
+    def get_symbols(self) -> List[str]:
+        return [s['symbol'] for s in self.get_active_slots()]
+
+    def get_base_assets(self) -> Dict[str, str]:
+        return {s['symbol']: s.get('base_asset', s['symbol']) for s in self.get_active_slots()}
+
+    def is_full(self) -> bool:
+        return len(self.get_active_slots()) >= self.max_slots
+
+    def has_symbol(self, symbol: str) -> bool:
+        return symbol.upper() in self.get_symbols()
+
+    def add_slot(self, symbol: str, base_asset: Optional[str], is_leveraged: bool) -> bool:
+        if self.is_full() or self.has_symbol(symbol):
+            return False
+        self.slots.append({
+            'symbol': symbol.upper(),
+            'base_asset': base_asset or symbol.upper(),
+            'added_at': datetime.now().isoformat(),
+            'is_leveraged': is_leveraged,
+            'active': True,
+        })
+        self._save()
+        return True
+
+    def remove_slot(self, symbol: str) -> bool:
+        upper_sym: str = symbol.upper()
+        self.slots = [s for s in self.slots if s['symbol'] != upper_sym]
+        self._save()
+        return True
+
+
 class TradingBot:
     def __init__(self, api: KoreaInvestmentAPI) -> None:
         self.api: KoreaInvestmentAPI = api
         
-        # 타겟 종목: 미국 ETF 3종 (레버리지)
-        self.symbols: List[str] = ['NVDL', 'TSLL', 'TQQQ']
-        
-        # 추세 판단용 기초 자산 (1배수)
-        self.base_assets: Dict[str, str] = {
-            'NVDL': 'NVDA',
-            'TSLL': 'TSLA',
-            'TQQQ': 'QQQ'
-        }
+        # 슬롯 매니저 (동적 종목 관리)
+        self.slot_manager: SlotManager = SlotManager()
         
         # Strategy E: SMA200만 필터 (RSI>=50 이중 필터 제거)
-        self.is_uptrend: Dict[str, bool] = {sym: False for sym in self.symbols}
-        self.is_rsi_oversold: Dict[str, bool] = {sym: False for sym in self.symbols}
+        self.is_uptrend: Dict[str, bool] = {}
+        self.is_rsi_oversold: Dict[str, bool] = {}
         
         # 최고점(High Water Mark) 추적용 (Trailing Stop 용도)
         self.hwm_file = "hwm_data.json"
@@ -37,29 +105,26 @@ class TradingBot:
         self.trailing_sell_pct: float = 0.50
         
         # Strategy E: 전일종가 대비 당일 하락률 기준 DCA
-        self.dca_2_threshold: float = -0.02
-        self.dca_4_threshold: float = -0.04
-        self.dca_8_threshold: float = -0.08
-        self.prev_close: Dict[str, float] = {sym: 0.0 for sym in self.symbols}
+        self.dca_2_threshold: float = -0.03
+        self.dca_4_threshold: float = -0.05
+        self.dca_8_threshold: float = -0.07
+        self.prev_close: Dict[str, float] = {}
         
         # Strategy E: 총 자산 대비 비율 매수
         self.strategy_mode_file: str = "strategy_mode.json"
         self.strategy_modes: Dict[str, Dict[str, float]] = {
-            "aggressive": {"base": 0.001, "w2": 0.020, "w4": 0.040, "w8": 0.060},
-            "defensive":  {"base": 0.001, "w2": 0.010, "w4": 0.020, "w8": 0.030},
+            "aggressive": {"base": 0.001, "w2": 0.025, "w4": 0.045, "w8": 0.065},
+            "defensive":  {"base": 0.001, "w2": 0.012, "w4": 0.022, "w8": 0.032},
         }
         self.auto_active_mode: str = "aggressive"
         self.strategy_mode: str = self._load_strategy_mode()
         self._apply_strategy_mode()
         
-        # 포지션 DataFrame 초기화
-        self.positions: pd.DataFrame = pd.DataFrame({
-            'symbol': self.symbols,
-            'avg_price': [0.0, 0.0, 0.0],
-            'quantity': [0.0, 0.0, 0.0],
-            'current_price': [0.0, 0.0, 0.0],
-            'return_rate': [0.0, 0.0, 0.0]
-        })
+        # 포지션 DataFrame 초기화 (슬롯 기반 동적 구성)
+        self.positions: pd.DataFrame = pd.DataFrame(
+            columns=['symbol', 'avg_price', 'quantity', 'current_price', 'return_rate']
+        )
+        self._rebuild_positions_df()
         
         # 상태 변수
         self.is_running: bool = False
@@ -114,6 +179,34 @@ class TradingBot:
         self._us_early_close: Set[date] = {
             date(2026, 7, 2), date(2026, 11, 27), date(2026, 12, 24),
         }
+
+        # 기존 보유 종목 자동 슬롯 등록 (슬롯이 비어있을 때만)
+        self._auto_register_holdings()
+
+    @property
+    def symbols(self) -> List[str]:
+        return self.slot_manager.get_symbols()
+
+    @property
+    def base_assets(self) -> Dict[str, str]:
+        return self.slot_manager.get_base_assets()
+
+    def _rebuild_positions_df(self) -> None:
+        """슬롯 변경 시 포지션 DataFrame을 재구축합니다."""
+        syms: List[str] = self.symbols
+        n: int = len(syms)
+        if n == 0:
+            self.positions = pd.DataFrame(
+                columns=['symbol', 'avg_price', 'quantity', 'current_price', 'return_rate']
+            )
+            return
+        self.positions = pd.DataFrame({
+            'symbol': syms,
+            'avg_price': [0.0] * n,
+            'quantity': [0.0] * n,
+            'current_price': [0.0] * n,
+            'return_rate': [0.0] * n,
+        })
 
     def is_us_market_holiday(self, now_et: datetime) -> bool:
         return now_et.date() in self._us_holidays
@@ -187,7 +280,8 @@ class TradingBot:
             cash_ratio: float = self.last_usd_balance / total_equity
             if cash_ratio <= 0.35:
                 should_defend = True
-        below_sma200: int = sum(1 for sym in self.symbols if not self.is_uptrend.get(sym, True))
+        current_symbols: List[str] = self.symbols
+        below_sma200: int = sum(1 for sym in current_symbols if not self.is_uptrend.get(sym, True))
         if below_sma200 >= 2:
             should_defend = True
         self.auto_active_mode = "defensive" if should_defend else "aggressive"
@@ -213,7 +307,7 @@ class TradingBot:
                     return json.load(f)
         except Exception as e:
             print(f"[HWM 로드 오류] {e}")
-        return {sym: 0.0 for sym in self.symbols}
+        return {}
 
     def _save_hwm(self) -> None:
         """최고점(HWM) 데이터를 로컬 파일에 저장합니다."""
@@ -233,6 +327,261 @@ class TradingBot:
             self.hwm[symbol] = current_price
             self._save_hwm()
             
+    def _auto_register_holdings(self) -> None:
+        """슬롯이 비어있을 때 기존 보유 종목을 자동으로 슬롯에 등록합니다."""
+        if self.slot_manager.get_active_slots():
+            return
+        try:
+            data: Dict[str, Any] = self.api.get_balance_and_positions()
+            held: List[Dict[str, Any]] = [p for p in data["positions"] if p.get("quantity", 0) > 0]
+            if not held:
+                print("[자동 등록] 보유 종목이 없습니다.")
+                return
+
+            print(f"[자동 등록] 슬롯이 비어있고 보유 종목 {len(held)}개 감지. 자동 등록합니다.")
+            for pos in held:
+                symbol: str = pos["symbol"]
+                if self.slot_manager.is_full():
+                    print(f"[자동 등록] 슬롯 가득 참 — {symbol} 등록 불가")
+                    break
+                is_leveraged: bool = symbol in LEVERAGED_ETF_MAP
+                base_asset: str = LEVERAGED_ETF_MAP.get(symbol, symbol)
+                self.slot_manager.add_slot(symbol, base_asset, is_leveraged)
+                self.is_uptrend[symbol] = False
+                self.is_rsi_oversold[symbol] = False
+                self.prev_close[symbol] = 0.0
+                cur_price: float = pos.get("current_price", 0.0)
+                self.hwm[symbol] = cur_price if cur_price > 0 else 0.0
+                print(f"[자동 등록] {symbol} 슬롯 등록 완료 (보유 {int(pos['quantity'])}주)")
+
+            self._save_hwm()
+            self._rebuild_positions_df()
+            print(f"[자동 등록] 총 {len(self.symbols)}개 슬롯 등록 완료")
+        except Exception as e:
+            print(f"[자동 등록 오류] {e}")
+
+    def add_symbol(self, symbol: str, buy_percent: float = 0.0) -> Dict[str, Any]:
+        """슬롯에 종목을 추가합니다. buy_percent > 0이면 총자산 대비 해당 비율만큼 매수."""
+        symbol = symbol.upper().strip()
+        now_et: datetime = datetime.now(ZoneInfo("America/New_York"))
+        if not self.is_regular_market_open(now_et):
+            return {"success": False, "message": "정규장 시간(23:30~06:00 KST)에만 종목을 추가할 수 있습니다."}
+        if self.slot_manager.is_full():
+            return {"success": False, "message": f"슬롯이 가득 찼습니다. (최대 {self.slot_manager.max_slots}개)"}
+        if self.slot_manager.has_symbol(symbol):
+            return {"success": False, "message": f"{symbol}은(는) 이미 추가된 종목입니다."}
+
+        try:
+            ticker = yf.Ticker(symbol)
+            info: Dict[str, Any] = ticker.info
+            name: str = info.get('shortName', info.get('longName', symbol))
+            if not info.get('regularMarketPrice') and not info.get('previousClose'):
+                return {"success": False, "message": f"{symbol} 종목 정보를 찾을 수 없습니다."}
+        except Exception as e:
+            return {"success": False, "message": f"{symbol} 종목 검증 실패: {e}"}
+
+        is_leveraged: bool = symbol in LEVERAGED_ETF_MAP
+        base_asset: str = LEVERAGED_ETF_MAP.get(symbol, symbol)
+
+        try:
+            current_price: float = self.api.get_current_price(symbol)
+            if current_price <= 0:
+                return {"success": False, "message": f"{symbol} 현재가 조회 실패 (한투 API에서 거래 불가)"}
+        except Exception as e:
+            return {"success": False, "message": f"{symbol} 거래소 조회 실패: {e}"}
+
+        already_held: bool = False
+        try:
+            bal_data: Dict[str, Any] = self.api.get_balance_and_positions()
+            for pos in bal_data["positions"]:
+                if pos["symbol"] == symbol and pos.get("quantity", 0) > 0:
+                    already_held = True
+                    break
+        except Exception:
+            pass
+
+        if already_held and buy_percent <= 0:
+            self.slot_manager.add_slot(symbol, base_asset, is_leveraged)
+            self.is_uptrend[symbol] = False
+            self.is_rsi_oversold[symbol] = False
+            self.prev_close[symbol] = 0.0
+            self.hwm[symbol] = current_price
+            self._save_hwm()
+            self._rebuild_positions_df()
+            try:
+                self._check_single_symbol_trend(symbol)
+            except Exception:
+                pass
+            self.log(f"✅ [슬롯 추가] {symbol} ({name}) — 기존 보유 종목 등록 (매수 없음)", send_tg=True)
+            return {
+                "success": True,
+                "message": f"{symbol} 슬롯 추가 완료 (기존 보유 종목)",
+                "symbol": symbol, "name": name,
+                "is_leveraged": is_leveraged, "base_asset": base_asset,
+                "price": current_price,
+            }
+
+        buy_qty: int = 1
+        if buy_percent > 0:
+            try:
+                if not bal_data:
+                    bal_data = self.api.get_balance_and_positions()
+                total_assets: float = bal_data.get("total_eval", 0.0)
+                if total_assets <= 0:
+                    total_assets = bal_data.get("usd_balance", 0.0)
+                buy_amount: float = total_assets * (buy_percent / 100.0)
+                buy_qty = int(buy_amount / current_price)
+                if buy_qty < 1:
+                    return {"success": False, "message": f"{symbol} 매수 금액(${buy_amount:.0f})이 1주 가격(${current_price:.2f})보다 적습니다."}
+            except Exception as e:
+                return {"success": False, "message": f"매수 수량 계산 실패: {e}"}
+
+        buy_price: float = round(current_price * 1.005, 2)
+        success: bool = self.api.place_order(symbol, buy_qty, buy_price, is_buy=True)
+        if not success:
+            return {"success": False, "message": f"{symbol} {buy_qty}주 매수 주문 실패"}
+
+        self.slot_manager.add_slot(symbol, base_asset, is_leveraged)
+        self.is_uptrend[symbol] = False
+        self.is_rsi_oversold[symbol] = False
+        self.prev_close[symbol] = 0.0
+        self.hwm[symbol] = 0.0
+        self._save_hwm()
+        self._rebuild_positions_df()
+
+        try:
+            self._check_single_symbol_trend(symbol)
+        except Exception:
+            pass
+
+        est_amount: float = buy_qty * buy_price
+        pct_label: str = f" ({buy_percent}%)" if buy_percent > 0 else ""
+        self.log(f"✅ [슬롯 추가] {symbol} ({name}) {buy_qty}주 매수 주문{pct_label} ≈ ${est_amount:,.0f}", send_tg=True)
+        self._log_trade(symbol, "매수", buy_qty, buy_price, est_amount, f"[슬롯 추가] 초기 매수{pct_label}")
+
+        return {
+            "success": True,
+            "message": f"{symbol} 슬롯 추가 완료 ({buy_qty}주 매수)",
+            "symbol": symbol, "name": name,
+            "is_leveraged": is_leveraged, "base_asset": base_asset,
+            "price": current_price, "quantity": buy_qty,
+            "est_amount": est_amount,
+        }
+
+    def remove_symbol(self, symbol: str, sell_all: bool = True) -> Dict[str, Any]:
+        """슬롯에서 종목을 제거합니다. sell_all=True이면 전량 매도 후 제거."""
+        symbol = symbol.upper().strip()
+        if not self.slot_manager.has_symbol(symbol):
+            return {"success": False, "message": f"{symbol}은(는) 슬롯에 없습니다."}
+
+        if sell_all:
+            try:
+                data: Dict[str, Any] = self.api.get_balance_and_positions()
+                position: Optional[Dict[str, Any]] = None
+                for pos in data["positions"]:
+                    if pos["symbol"] == symbol and pos.get("quantity", 0) > 0:
+                        position = pos
+                        break
+
+                if position:
+                    qty: int = int(position["quantity"])
+                    price: float = position.get("current_price", 0.0)
+                    if price <= 0:
+                        price = self.api.get_current_price(symbol)
+                    sell_price: float = round(price * 0.99, 2)
+                    order_ok: bool = self.api.place_order(symbol, qty, sell_price, is_buy=False)
+                    if order_ok:
+                        self._log_trade(symbol, "매도", qty, sell_price, qty * sell_price, "[슬롯 제거] 전량 매도")
+                        self.log(f"📤 [슬롯 제거] {symbol} {qty}주 전량 매도 주문", send_tg=True)
+                    else:
+                        return {"success": False, "message": f"{symbol} 매도 주문 실패"}
+            except Exception as e:
+                return {"success": False, "message": f"매도 처리 오류: {e}"}
+
+        self.slot_manager.remove_slot(symbol)
+        self.is_uptrend.pop(symbol, None)
+        self.is_rsi_oversold.pop(symbol, None)
+        self.prev_close.pop(symbol, None)
+        self.hwm.pop(symbol, None)
+        self._save_hwm()
+        self.daily_state.pop(symbol, None)
+        self._save_daily_state()
+        self._rebuild_positions_df()
+
+        action: str = "전량 매도 후 제거" if sell_all else "감시 중단"
+        self.log(f"🗑️ [슬롯 제거] {symbol} {action}", send_tg=True)
+        return {"success": True, "message": f"{symbol} 슬롯 제거 완료 ({action})"}
+
+    def _check_single_symbol_trend(self, symbol: str) -> None:
+        """단일 종목의 SMA200 및 RSI를 확인합니다."""
+        base_sym: str = self.base_assets.get(symbol, symbol)
+        try:
+            ticker = yf.Ticker(base_sym)
+            hist: pd.DataFrame = ticker.history(period="1y")
+            if len(hist) < 200:
+                self.is_uptrend[symbol] = False
+                self.is_rsi_oversold[symbol] = False
+                return
+
+            sma_200: float = float(hist['Close'].tail(200).mean())
+            current_price: float = float(hist['Close'].iloc[-1])
+            delta: pd.Series = hist['Close'].diff()
+            gain: pd.Series = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
+            loss: pd.Series = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
+            rs: pd.Series = gain / loss
+            current_rsi: float = float((100 - (100 / (1 + rs))).iloc[-1])
+
+            self.is_uptrend[symbol] = current_price > sma_200
+            self.is_rsi_oversold[symbol] = current_rsi < 30.0
+        except Exception:
+            self.is_uptrend[symbol] = False
+            self.is_rsi_oversold[symbol] = False
+
+        try:
+            etf_ticker = yf.Ticker(symbol)
+            etf_hist: pd.DataFrame = etf_ticker.history(period="5d")
+            if len(etf_hist) >= 2:
+                self.prev_close[symbol] = float(etf_hist['Close'].iloc[-2])
+            elif len(etf_hist) == 1:
+                self.prev_close[symbol] = float(etf_hist['Close'].iloc[-1])
+        except Exception:
+            pass
+
+    def search_ticker(self, symbol: str) -> Dict[str, Any]:
+        """티커를 검색하고 종목 정보를 반환합니다."""
+        symbol = symbol.upper().strip()
+        try:
+            ticker = yf.Ticker(symbol)
+            info: Dict[str, Any] = ticker.info
+            name: str = info.get('shortName', info.get('longName', ''))
+            price: float = info.get('regularMarketPrice', info.get('previousClose', 0.0)) or 0.0
+            if not name and price <= 0:
+                return {"found": False, "message": f"{symbol} 종목을 찾을 수 없습니다."}
+
+            is_leveraged: bool = symbol in LEVERAGED_ETF_MAP
+            base_asset: str = LEVERAGED_ETF_MAP.get(symbol, symbol)
+            already_added: bool = self.slot_manager.has_symbol(symbol)
+
+            tradeable: bool = False
+            try:
+                kis_price: float = self.api.get_current_price(symbol)
+                tradeable = kis_price > 0
+                if tradeable:
+                    price = kis_price
+            except Exception:
+                pass
+
+            return {
+                "found": True, "symbol": symbol, "name": name,
+                "price": price, "is_leveraged": is_leveraged,
+                "base_asset": base_asset, "tradeable": tradeable,
+                "already_added": already_added,
+                "currency": info.get('currency', 'USD'),
+                "exchange": info.get('exchange', ''),
+            }
+        except Exception as e:
+            return {"found": False, "message": f"검색 실패: {e}"}
+
     def update_exchange_rate(self) -> None:
         """yfinance 폴백 환율 (sync_positions 호출 전 초기값 용도)"""
         try:
@@ -578,9 +927,12 @@ class TradingBot:
             
             has_positions = False
             for symbol in self.symbols:
-                qty = self.positions.loc[self.positions['symbol'] == symbol, 'quantity'].values[0]
+                mask_sym = self.positions['symbol'] == symbol
+                if not mask_sym.any():
+                    continue
+                qty = self.positions.loc[mask_sym, 'quantity'].values[0]
                 if qty > 0:
-                    price = self.positions.loc[self.positions['symbol'] == symbol, 'current_price'].values[0]
+                    price = self.positions.loc[mask_sym, 'current_price'].values[0]
                     hwm_price = self.hwm.get(symbol, 0.0)
                     drawdown = 0.0
                     if hwm_price > 0:
@@ -633,28 +985,41 @@ class TradingBot:
         self.tot_pchs_amt = data.get("tot_pchs_amt", 0.0)
         self.tot_stck_evlu = data.get("tot_stck_evlu", 0.0)
 
-        self.positions['quantity'] = 0.0
-        self.positions['avg_price'] = 0.0
-        self.positions['current_price'] = 0.0
+        current_symbols: List[str] = self.symbols
+        if self.positions.empty or set(self.positions['symbol'].tolist()) != set(current_symbols):
+            self._rebuild_positions_df()
+
+        if not self.positions.empty:
+            self.positions['quantity'] = 0.0
+            self.positions['avg_price'] = 0.0
+            self.positions['current_price'] = 0.0
 
         for pos in data["positions"]:
             symbol: str = pos["symbol"]
-            if symbol in self.symbols:
+            if symbol in current_symbols and not self.positions.empty:
                 idx: pd.Series = self.positions['symbol'] == symbol
-                self.positions.loc[idx, 'quantity'] = pos["quantity"]
-                self.positions.loc[idx, 'avg_price'] = pos["avg_price"]
-                cur_price: float = pos.get("current_price", 0.0)
-                if cur_price > 0:
-                    self.positions.loc[idx, 'current_price'] = cur_price
-                api_return: float = pos.get("return_rate", 0.0)
-                if api_return != 0.0:
-                    self.positions.loc[idx, 'return_rate'] = api_return
+                if idx.any():
+                    self.positions.loc[idx, 'quantity'] = pos["quantity"]
+                    self.positions.loc[idx, 'avg_price'] = pos["avg_price"]
+                    cur_price: float = pos.get("current_price", 0.0)
+                    if cur_price > 0:
+                        self.positions.loc[idx, 'current_price'] = cur_price
+                    api_return: float = pos.get("return_rate", 0.0)
+                    if api_return != 0.0:
+                        self.positions.loc[idx, 'return_rate'] = api_return
 
     def fetch_market_data(self) -> None:
         self.sync_positions()
-        
+        if self.positions.empty:
+            if not self._sync_logged:
+                self.log(f"데이터 동기화 완료 | 예수금: ${self.last_usd_balance:.2f} (슬롯 없음)", print_stdout=False)
+                self._sync_logged = True
+            return
+
         for sym in self.symbols:
             mask: pd.Series = self.positions['symbol'] == sym
+            if not mask.any():
+                continue
             cur: float = float(self.positions.loc[mask, 'current_price'].values[0])
             if cur <= 0:
                 self.positions.loc[mask, 'current_price'] = self.api.get_current_price(sym)
@@ -667,13 +1032,16 @@ class TradingBot:
         
         self.positions.fillna(0.0, inplace=True)
         if not self._sync_logged:
-            self.log(f"데이터 동기화 완료 | 예수금: ${self.last_usd_balance:.2f}", print_stdout=False)
+            self.log(f"데이터 동기화 완료 | 예수금: ${self.last_usd_balance:.2f} | 슬롯: {len(self.symbols)}개", print_stdout=False)
             self._sync_logged = True
         
         now_et: datetime = self.get_eastern_time()
         for symbol in self.symbols:
-            price: float = float(self.positions.loc[self.positions['symbol'] == symbol, 'current_price'].values[0])
-            qty: float = float(self.positions.loc[self.positions['symbol'] == symbol, 'quantity'].values[0])
+            mask_sym: pd.Series = self.positions['symbol'] == symbol
+            if not mask_sym.any():
+                continue
+            price: float = float(self.positions.loc[mask_sym, 'current_price'].values[0])
+            qty: float = float(self.positions.loc[mask_sym, 'quantity'].values[0])
             
             if qty > 0 and price > 0:
                 self.update_hwm(symbol, price)
@@ -768,8 +1136,11 @@ class TradingBot:
             total_equity += (self.positions['quantity'] * self.positions['current_price']).sum()
 
         for symbol in self.symbols:
-            price: float = float(self.positions.loc[self.positions['symbol'] == symbol, 'current_price'].values[0])
-            qty: float = float(self.positions.loc[self.positions['symbol'] == symbol, 'quantity'].values[0])
+            mask_sym: pd.Series = self.positions['symbol'] == symbol
+            if not mask_sym.any():
+                continue
+            price: float = float(self.positions.loc[mask_sym, 'current_price'].values[0])
+            qty: float = float(self.positions.loc[mask_sym, 'quantity'].values[0])
             
             if price <= 0:
                 continue
@@ -862,7 +1233,7 @@ class TradingBot:
         self.is_running = True
         self.log("▶️ 봇 자동매매 루프가 시작되었습니다.", send_tg=True)
 
-        if self.prev_close.get(self.symbols[0], 0.0) == 0.0:
+        if self.symbols and self.prev_close.get(self.symbols[0], 0.0) == 0.0:
             self.log("📊 [시작] 시장 데이터 초기 로딩 중...")
             self.check_trend_and_momentum()
             self.update_exchange_rate()
@@ -928,6 +1299,7 @@ class TradingBot:
             self.log("⏸️ 봇 정지 명령이 내려졌습니다.", send_tg=True)
 
     def get_status(self) -> Dict[str, Any]:
+        now_et: datetime = datetime.now(ZoneInfo("America/New_York"))
         return {
             "is_running": self.is_running,
             "usd_balance": self.last_usd_balance,
@@ -935,6 +1307,9 @@ class TradingBot:
             "tot_evlu_pfls": self.tot_evlu_pfls,
             "tot_pchs_amt": self.tot_pchs_amt,
             "tot_stck_evlu": self.tot_stck_evlu,
-            "positions": self.positions.to_dict(orient="records"),
-            "logs": self.logs
+            "positions": self.positions.to_dict(orient="records") if not self.positions.empty else [],
+            "logs": self.logs,
+            "slots": self.slot_manager.get_active_slots(),
+            "max_slots": self.slot_manager.max_slots,
+            "market_open": self.is_regular_market_open(now_et),
         }

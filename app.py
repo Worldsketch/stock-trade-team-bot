@@ -146,12 +146,13 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
 
     try:
         data: Dict[str, Any] = bot_instance.api.get_balance_and_positions()
+        current_symbols: list = bot_instance.symbols
         positions_list: list = []
         held_symbols: set = set()
 
         for pos in data["positions"]:
             sym: str = pos["symbol"]
-            if sym not in bot_instance.symbols:
+            if sym not in current_symbols:
                 continue
             held_symbols.add(sym)
             cur_price: float = pos.get("current_price", 0.0)
@@ -160,6 +161,7 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
                     cur_price = bot_instance.api.get_current_price(sym)
                 except Exception:
                     pass
+            slot_info = next((s for s in bot_instance.slot_manager.get_active_slots() if s['symbol'] == sym), {})
             positions_list.append({
                 "symbol": sym,
                 "quantity": pos.get("quantity", 0.0),
@@ -168,14 +170,19 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
                 "evlu_amt": pos.get("evlu_amt", 0.0),
                 "evlu_pfls": pos.get("evlu_pfls", 0.0),
                 "return_rate": pos.get("return_rate", 0.0),
-                "pchs_amt": pos.get("pchs_amt", 0.0)
+                "pchs_amt": pos.get("pchs_amt", 0.0),
+                "is_leveraged": slot_info.get("is_leveraged", False),
+                "base_asset": slot_info.get("base_asset", sym),
             })
 
-        for sym in bot_instance.symbols:
+        for sym in current_symbols:
             if sym not in held_symbols:
+                slot_info = next((s for s in bot_instance.slot_manager.get_active_slots() if s['symbol'] == sym), {})
                 positions_list.append({
                     "symbol": sym, "quantity": 0.0, "avg_price": 0.0,
-                    "current_price": 0.0, "return_rate": 0.0
+                    "current_price": 0.0, "return_rate": 0.0,
+                    "is_leveraged": slot_info.get("is_leveraged", False),
+                    "base_asset": slot_info.get("base_asset", sym),
                 })
 
         api_exrt: float = data.get("exchange_rate", 0.0)
@@ -208,6 +215,8 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
             "strategy_mode": bot_instance.strategy_mode,
             "auto_active": bot_instance.auto_active_mode,
             "realized_pnl": _calc_realized_pnl(),
+            "slots": bot_instance.slot_manager.get_active_slots(),
+            "max_slots": bot_instance.slot_manager.max_slots,
         }
     except Exception:
         result = bot_instance.get_status()
@@ -254,7 +263,7 @@ async def manual_sell(request: Request, username: str = Depends(get_current_user
         return {"success": False, "message": "잘못된 요청입니다."}
 
     if symbol not in bot_instance.symbols:
-        return {"success": False, "message": f"지원하지 않는 종목: {symbol}"}
+        return {"success": False, "message": f"슬롯에 등록되지 않은 종목: {symbol}"}
     if percent not in (10, 25, 50, 100):
         return {"success": False, "message": f"잘못된 매도 비율: {percent}%"}
 
@@ -512,7 +521,26 @@ def _generate_ai_report() -> Dict[str, Any]:
     if not gemini_key:
         return {"error": "GEMINI_API_KEY not set"}
 
-    symbols: Dict[str, str] = {"NVDA": "엔비디아", "TSLA": "테슬라", "QQQ": "나스닥100 ETF"}
+    analyze_symbols: List[str] = []
+    slot_to_base: Dict[str, str] = {}
+    if bot_instance:
+        for sym in bot_instance.symbols:
+            base: str = bot_instance.base_assets.get(sym, sym)
+            if base != sym:
+                slot_to_base[sym] = base
+            target: str = base if base != sym else sym
+            if target not in analyze_symbols:
+                analyze_symbols.append(target)
+    if not analyze_symbols:
+        analyze_symbols = ["NVDA", "TSLA", "QQQ"]
+    symbols: Dict[str, str] = {}
+    for sym in analyze_symbols:
+        try:
+            import yfinance as _yf
+            _info = _yf.Ticker(sym).info
+            symbols[sym] = _info.get('shortName', _info.get('longName', sym))
+        except Exception:
+            symbols[sym] = sym
     market_data: List[str] = []
 
     for sym, name in symbols.items():
@@ -600,11 +628,16 @@ def _generate_ai_report() -> Dict[str, Any]:
 
     now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
 
+    slot_info: str = ""
+    if slot_to_base:
+        pairs: List[str] = [f"{s} → 기초자산 {b}" for s, b in slot_to_base.items()]
+        slot_info = f"\n보유 레버리지 ETF 매핑: {', '.join(pairs)}\n"
+
     prompt: str = f"""당신은 월가 출신의 시니어 주식 시장 기술적 분석 전문가입니다.
-아래 기술적 지표 데이터를 기반으로 정밀 분석 리포트를 한국어로 작성하세요.
+사용자가 현재 보유 중인 종목의 기술적 지표 데이터를 기반으로 맞춤 분석 리포트를 한국어로 작성하세요.
 현재가가 '실시간(프리장)'인 종목은 미국 본장 개장 전 프리마켓 가격이며, 본장 시작 시 변동 가능성이 있습니다.
 현재 시각: {now_kst.strftime('%Y년 %m월 %d일 %H:%M')} (한국시간)
-
+{slot_info}
 {chr(10).join(market_data)}
 
 각 종목별로 다음을 분석하세요:
@@ -628,12 +661,13 @@ def _generate_ai_report() -> Dict[str, Any]:
    - 목표가 대비 현재가 괴리율 해석
    - 기술적 분석과 월가 의견의 일치/괴리 여부
 
-5. 단기 전망 (1~2주)
-   - 가장 가능성 높은 시나리오
-   - 주의할 변수
+5. 보유 종목별 전략 제안
+   - 레버리지 ETF 보유자 관점에서 기초자산 흐름이 레버리지 ETF에 미치는 영향
+   - 추가 매수/관망/비중 축소 등 구체적 액션 제안
+   - 주의할 변수와 리스크
 
 마지막에 종합 의견:
-- 3종목의 상관관계와 시장 전반 분위기
+- 보유 종목 간 상관관계와 포트폴리오 리스크 분석
 - 기술적 분석과 월가 컨센서스를 종합한 현 시점 핵심 포인트
 
 작성 규칙:
@@ -749,6 +783,64 @@ async def set_strategy_mode(request: Request, username: str = Depends(get_curren
     if bot_instance.set_strategy_mode(mode):
         return {"status": "ok", "mode": mode, "auto_active": bot_instance.auto_active_mode}
     return {"error": f"유효하지 않은 모드: {mode}"}
+
+
+@app.get("/api/slots")
+async def get_slots(username: str = Depends(get_current_username)) -> Dict[str, Any]:
+    if not bot_instance:
+        return {"slots": [], "max_slots": 6}
+    return {
+        "slots": bot_instance.slot_manager.get_active_slots(),
+        "max_slots": bot_instance.slot_manager.max_slots,
+        "current_count": len(bot_instance.symbols),
+    }
+
+
+@app.post("/api/slots/add")
+async def add_slot(request: Request, username: str = Depends(get_current_username)) -> Dict[str, Any]:
+    global _status_cache
+    if not bot_instance:
+        return {"success": False, "message": "봇이 초기화되지 않았습니다."}
+    try:
+        body: Dict[str, Any] = await request.json()
+        symbol: str = body.get("symbol", "").strip().upper()
+    except Exception:
+        return {"success": False, "message": "잘못된 요청입니다."}
+    if not symbol:
+        return {"success": False, "message": "종목 코드를 입력해주세요."}
+    buy_percent: float = float(body.get("buy_percent", 0))
+    result: Dict[str, Any] = bot_instance.add_symbol(symbol, buy_percent=buy_percent)
+    if result.get("success"):
+        _status_cache = {"data": None, "ts": 0.0}
+    return result
+
+
+@app.post("/api/slots/remove")
+async def remove_slot(request: Request, username: str = Depends(get_current_username)) -> Dict[str, Any]:
+    global _status_cache
+    if not bot_instance:
+        return {"success": False, "message": "봇이 초기화되지 않았습니다."}
+    try:
+        body: Dict[str, Any] = await request.json()
+        symbol: str = body.get("symbol", "").strip().upper()
+        sell_all: bool = body.get("sell_all", True)
+    except Exception:
+        return {"success": False, "message": "잘못된 요청입니다."}
+    if not symbol:
+        return {"success": False, "message": "종목 코드를 입력해주세요."}
+    result: Dict[str, Any] = bot_instance.remove_symbol(symbol, sell_all=sell_all)
+    if result.get("success"):
+        _status_cache = {"data": None, "ts": 0.0}
+    return result
+
+
+@app.get("/api/search-ticker")
+async def search_ticker(symbol: str = "", username: str = Depends(get_current_username)) -> Dict[str, Any]:
+    if not bot_instance:
+        return {"found": False, "message": "봇이 초기화되지 않았습니다."}
+    if not symbol.strip():
+        return {"found": False, "message": "종목 코드를 입력해주세요."}
+    return bot_instance.search_ticker(symbol)
 
 
 @app.post("/api/start")
