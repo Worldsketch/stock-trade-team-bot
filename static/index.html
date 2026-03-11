@@ -295,14 +295,11 @@
                         <i class="fa-solid fa-receipt text-amber-400"></i> 매매 내역
                     </h2>
                     <div class="flex items-center gap-3">
-                        <select id="tradeFilter" onchange="renderTrades()" class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none">
-                            <option value="all">전체</option>
-                            <option value="매수">매수만</option>
-                            <option value="매도">매도만</option>
-                        </select>
-                        <select id="tradeSymbolFilter" onchange="renderTrades()" class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none">
-                            <option value="all">전체 종목</option>
-                        </select>
+                        <div class="flex bg-slate-900/60 rounded-lg p-0.5 border border-slate-700/50">
+                            <button onclick="setTradeFilter('all')" id="tradeFilterAll" class="px-3 py-1 rounded-md text-xs font-medium transition-all duration-200 bg-amber-500/20 text-amber-400 border border-amber-500/30">전체</button>
+                            <button onclick="setTradeFilter('매수')" id="tradeFilterBuy" class="px-3 py-1 rounded-md text-xs font-medium transition-all duration-200 text-slate-500">매수</button>
+                            <button onclick="setTradeFilter('매도')" id="tradeFilterSell" class="px-3 py-1 rounded-md text-xs font-medium transition-all duration-200 text-slate-500">매도</button>
+                        </div>
                         <button onclick="fetchTradeHistory()" class="text-xs text-slate-400 hover:text-white transition-colors">
                             <i class="fa-solid fa-rotate-right mr-1"></i>새로고침
                         </button>
@@ -729,18 +726,7 @@
             group.innerHTML = html;
         }
 
-        function updateTradeSymbolFilter(slots) {
-            const sel = document.getElementById('tradeSymbolFilter');
-            const curVal = sel.value;
-            sel.innerHTML = '<option value="all">전체 종목</option>';
-            (slots || []).forEach(s => {
-                const opt = document.createElement('option');
-                opt.value = s.symbol;
-                opt.textContent = s.symbol;
-                if (s.symbol === curVal) opt.selected = true;
-                sel.appendChild(opt);
-            });
-        }
+        function updateTradeSymbolFilter(slots) {}
 
         initLwChart();
 
@@ -1285,15 +1271,23 @@
             } catch(e) { console.error('Trade history error:', e); }
         }
 
+        let _tradeFilter = 'all';
+        function setTradeFilter(filter) {
+            _tradeFilter = filter;
+            const base = 'px-3 py-1 rounded-md text-xs font-medium transition-all duration-200';
+            const off = `${base} text-slate-500`;
+            document.getElementById('tradeFilterAll').className = filter === 'all' ? `${base} bg-amber-500/20 text-amber-400 border border-amber-500/30` : off;
+            document.getElementById('tradeFilterBuy').className = filter === '매수' ? `${base} bg-emerald-500/20 text-emerald-400 border border-emerald-500/30` : off;
+            document.getElementById('tradeFilterSell').className = filter === '매도' ? `${base} bg-rose-500/20 text-rose-400 border border-rose-500/30` : off;
+            renderTrades();
+        }
+
         function renderTrades() {
             const container = document.getElementById('tradeHistoryContainer');
-            const sideFilter = document.getElementById('tradeFilter').value;
-            const symFilter = document.getElementById('tradeSymbolFilter').value;
             const rate = lastData?.exchange_rate || 1400;
 
             let filtered = allTrades;
-            if (sideFilter !== 'all') filtered = filtered.filter(t => t.side === sideFilter);
-            if (symFilter !== 'all') filtered = filtered.filter(t => t.symbol === symFilter);
+            if (_tradeFilter !== 'all') filtered = filtered.filter(t => t.side === _tradeFilter);
 
             if (filtered.length === 0) {
                 container.innerHTML = '<p class="text-center text-slate-500 py-8">매매 내역이 없습니다.</p>';
