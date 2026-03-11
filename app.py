@@ -389,7 +389,8 @@ async def get_chart_data(symbol: str = "", period: str = "5d", interval: str = "
 
     try:
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period=period, interval=interval)
+        use_prepost: bool = interval not in ("1d", "1wk", "1mo")
+        hist = ticker.history(period=period, interval=interval, prepost=use_prepost)
         if hist.empty:
             return {"candles": [], "symbol": symbol}
 
@@ -737,6 +738,12 @@ def _generate_ai_report() -> Dict[str, Any]:
         with _ai_report_lock:
             with open(AI_REPORT_FILE, 'w', encoding='utf-8') as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
+
+        if bot_instance:
+            preview: str = text[:500] + ("..." if len(text) > 500 else "")
+            tg_msg: str = f"📊 [AI 시장 분석 발행]\n⏰ {report['generated_at']}\n\n{preview}"
+            bot_instance.send_telegram_message(tg_msg)
+
         return report
     except Exception as e:
         return {"error": f"Gemini API 호출 실패: {e}"}
