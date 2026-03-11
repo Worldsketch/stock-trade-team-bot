@@ -139,11 +139,16 @@ class KoreaInvestmentAPI:
                 if data.get('rt_cd') != '0':
                     return {"usd_balance": 0.0, "positions": []}
                     
-                usd_balance_str = data['output2'].get('frcr_dnca2_amt')
+                output2 = data.get('output2', {})
+                if isinstance(output2, list) and output2:
+                    output2 = output2[0]
+                elif not isinstance(output2, dict):
+                    output2 = {}
+                usd_balance_str = output2.get('frcr_dnca2_amt')
                 if not usd_balance_str:
-                    usd_balance_str = data['output2'].get('frcr_evlu_amt2')
+                    usd_balance_str = output2.get('frcr_evlu_amt2')
                 if not usd_balance_str: 
-                    usd_balance_str = data['output2'].get('frcr_buy_amt_smtl1', 0.0)
+                    usd_balance_str = output2.get('frcr_buy_amt_smtl1', 0.0)
                 usd_balance = float(usd_balance_str)
                 
                 positions = []

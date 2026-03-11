@@ -16,7 +16,7 @@ if not HOST or not DEPLOY_PATH:
     print("❌ .env에 DEPLOY_HOST, DEPLOY_PATH를 설정해주세요.")
     sys.exit(1)
 
-DEPLOY_FILES: list[str] = ["bot.py", "app.py", "api.py", "requirements.txt", "slots.json"]
+DEPLOY_FILES: list[str] = ["bot.py", "app.py", "api.py", "requirements.txt"]
 DEPLOY_STATIC: list[str] = ["static/index.html", "static/manifest.json", "static/sw.js"]
 TARGET: str = f"{USER}@{HOST}"
 

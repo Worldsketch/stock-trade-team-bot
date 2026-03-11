@@ -351,7 +351,11 @@ class TradingBot:
                 self.is_rsi_oversold[symbol] = False
                 self.prev_close[symbol] = 0.0
                 cur_price: float = pos.get("current_price", 0.0)
-                self.hwm[symbol] = cur_price if cur_price > 0 else 0.0
+                existing_hwm: float = self.hwm.get(symbol, 0.0)
+                if existing_hwm > 0:
+                    print(f"[자동 등록] {symbol} 기존 HWM 유지: ${existing_hwm:.2f}")
+                else:
+                    self.hwm[symbol] = cur_price if cur_price > 0 else 0.0
                 print(f"[자동 등록] {symbol} 슬롯 등록 완료 (보유 {int(pos['quantity'])}주)")
 
             self._save_hwm()
@@ -612,9 +616,12 @@ class TradingBot:
                 loss: pd.Series = -delta.where(delta < 0, 0.0)
                 avg_gain: pd.Series = gain.ewm(alpha=1/14, adjust=False).mean()
                 avg_loss: pd.Series = loss.ewm(alpha=1/14, adjust=False).mean()
-                rs: pd.Series = avg_gain / avg_loss
+                avg_loss_safe: pd.Series = avg_loss.replace(0.0, 1e-10)
+                rs: pd.Series = avg_gain / avg_loss_safe
                 rsi_14: pd.Series = 100 - (100 / (1 + rs))
                 current_rsi: float = float(rsi_14.iloc[-1])
+                if pd.isna(current_rsi):
+                    current_rsi = 50.0
                 
                 is_up: bool = current_price > sma_200
                 is_oversold: bool = current_rsi < 30.0

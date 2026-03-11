@@ -219,8 +219,11 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
             "slots": bot_instance.slot_manager.get_active_slots(),
             "max_slots": bot_instance.slot_manager.max_slots,
         }
-    except Exception:
-        result = bot_instance.get_status()
+    except Exception as e:
+        try:
+            result = bot_instance.get_status()
+        except Exception:
+            result = {"error": f"상태 조회 실패: {e}", "is_running": False, "positions": []}
 
     _status_cache = {"data": result, "ts": now}
     return result
@@ -399,7 +402,7 @@ async def get_chart_data(symbol: str = "NVDL", period: str = "5d", interval: str
                 all_trades = json.load(f)
             for t in all_trades:
                 if t.get("symbol") == symbol:
-                    trades.append({"time": t["timestamp"], "side": t["side"], "price": t["price"], "qty": t["qty"]})
+                    trades.append({"time": t.get("timestamp", ""), "side": t.get("side", ""), "price": t.get("price", 0), "qty": t.get("qty", 0)})
 
         result: Dict[str, Any] = {"candles": candles, "symbol": symbol, "sma200": sma200_val, "trades": trades}
         _chart_cache[cache_key] = {"data": result, "ts": now}
@@ -687,9 +690,15 @@ def _generate_ai_report() -> Dict[str, Any]:
         resp = req.post(url, json=payload, timeout=120)
         resp.raise_for_status()
         result = resp.json()
-        candidate = result["candidates"][0]
+        candidates = result.get("candidates", [])
+        if not candidates:
+            return {"error": "Gemini API 응답에 candidates가 없습니다."}
+        candidate = candidates[0]
         finish_reason: str = candidate.get("finishReason", "")
-        text: str = candidate["content"]["parts"][0]["text"]
+        parts = candidate.get("content", {}).get("parts", [])
+        if not parts or "text" not in parts[0]:
+            return {"error": "Gemini API 응답에서 텍스트를 추출할 수 없습니다."}
+        text: str = parts[0]["text"]
         if finish_reason == "MAX_TOKENS":
             text += "\n\n(분석이 길어 일부 생략되었습니다)"
         import re
@@ -824,7 +833,7 @@ async def remove_slot(request: Request, username: str = Depends(get_current_user
     try:
         body: Dict[str, Any] = await request.json()
         symbol: str = body.get("symbol", "").strip().upper()
-        sell_all: bool = body.get("sell_all", True)
+        sell_all: bool = bool(body.get("sell_all", True))
     except Exception:
         return {"success": False, "message": "잘못된 요청입니다."}
     if not symbol:
