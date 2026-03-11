@@ -582,9 +582,12 @@ def _generate_ai_report() -> Dict[str, Any]:
 
             delta: pd.Series = close.diff()
             gain: pd.Series = delta.where(delta > 0, 0.0).ewm(alpha=1 / 14, adjust=False).mean()
-            loss: pd.Series = (-delta.where(delta < 0, 0.0)).ewm(alpha=1 / 14, adjust=False).mean()
-            rs: pd.Series = gain / loss
+            loss_raw: pd.Series = (-delta.where(delta < 0, 0.0)).ewm(alpha=1 / 14, adjust=False).mean()
+            loss_safe: pd.Series = loss_raw.replace(0.0, 1e-10)
+            rs: pd.Series = gain / loss_safe
             rsi: float = float((100 - (100 / (1 + rs))).iloc[-1])
+            if pd.isna(rsi):
+                rsi = 50.0
 
             golden_cross: bool = sma_50 > sma_200 and float(close.tail(50).iloc[0]) <= float(close.tail(200).iloc[0])
             death_cross: bool = sma_50 < sma_200 and float(close.tail(50).iloc[0]) >= float(close.tail(200).iloc[0])
