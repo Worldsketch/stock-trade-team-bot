@@ -6,6 +6,7 @@ import threading
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional, Set
+import exchange_calendars as xcals
 import yfinance as yf
 import json
 import pandas as pd
@@ -168,17 +169,7 @@ class TradingBot:
         self._cash_alert_40_sent: str = ""
         self._cash_alert_30_sent: str = ""
 
-        # 미국 주식시장 공휴일 (매년 초에 갱신 필요)
-        self._us_holidays: Set[date] = {
-            # 2026년
-            date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16),
-            date(2026, 4, 3), date(2026, 5, 25), date(2026, 6, 19),
-            date(2026, 7, 3), date(2026, 9, 7), date(2026, 11, 26),
-            date(2026, 12, 25),
-        }
-        self._us_early_close: Set[date] = {
-            date(2026, 7, 2), date(2026, 11, 27), date(2026, 12, 24),
-        }
+        self._nyse_cal = xcals.get_calendar("XNYS")
 
         # 기존 보유 종목 자동 슬롯 등록 (슬롯이 비어있을 때만)
         self._auto_register_holdings()
@@ -209,11 +200,24 @@ class TradingBot:
         })
 
     def is_us_market_holiday(self, now_et: datetime) -> bool:
-        return now_et.date() in self._us_holidays
+        d = now_et.date()
+        try:
+            return not self._nyse_cal.is_session(pd.Timestamp(d))
+        except Exception:
+            return False
 
     def get_early_close_time(self, now_et: datetime) -> Optional[datetime]:
-        if now_et.date() in self._us_early_close:
-            return now_et.replace(hour=13, minute=0, second=0, microsecond=0)
+        d = now_et.date()
+        try:
+            ts = pd.Timestamp(d)
+            if not self._nyse_cal.is_session(ts):
+                return None
+            close_utc = self._nyse_cal.session_close(ts)
+            close_et = close_utc.tz_convert("America/New_York")
+            if close_et.hour < 16:
+                return now_et.replace(hour=close_et.hour, minute=close_et.minute, second=0, microsecond=0)
+        except Exception:
+            pass
         return None
 
     def _load_daily_state(self) -> Dict[str, Any]:
@@ -368,8 +372,8 @@ class TradingBot:
         """슬롯에 종목을 추가합니다. buy_percent > 0이면 총자산 대비 해당 비율만큼 매수."""
         symbol = symbol.upper().strip()
         now_et: datetime = datetime.now(ZoneInfo("America/New_York"))
-        if not self.is_regular_market_open(now_et):
-            return {"success": False, "message": "정규장 시간에만 종목을 추가할 수 있습니다."}
+        if not self.is_active_trading_time(now_et):
+            return {"success": False, "message": "거래 가능 시간에만 종목을 추가할 수 있습니다. (프리마켓~정규장)"}
         if self.slot_manager.is_full():
             return {"success": False, "message": f"슬롯이 가득 찼습니다. (최대 {self.slot_manager.max_slots}개)"}
         if self.slot_manager.has_symbol(symbol):
@@ -700,10 +704,9 @@ class TradingBot:
             return False
 
         pre_market_open = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
-        early_close = self.get_early_close_time(now_et)
-        market_close = early_close if early_close else now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+        after_market_close = now_et.replace(hour=20, minute=0, second=0, microsecond=0)
 
-        return pre_market_open <= now_et < market_close
+        return pre_market_open <= now_et < after_market_close
 
     def send_telegram_message(self, message: str, max_retries: int = 3) -> None:
         token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -1336,7 +1339,7 @@ class TradingBot:
             "logs": self.logs,
             "slots": self.slot_manager.get_active_slots(),
             "max_slots": self.slot_manager.max_slots,
-            "market_open": self.is_regular_market_open(now_et),
+            "market_open": self.is_active_trading_time(now_et),
             "is_dst": bool(now_et.dst()),
             "et_time": now_et.strftime("%H:%M"),
         }
