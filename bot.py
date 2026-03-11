@@ -426,9 +426,7 @@ class TradingBot:
             try:
                 if not bal_data:
                     bal_data = self.api.get_balance_and_positions()
-                total_assets: float = bal_data.get("total_eval", 0.0)
-                if total_assets <= 0:
-                    total_assets = bal_data.get("usd_balance", 0.0)
+                total_assets: float = bal_data.get("usd_balance", 0.0) + bal_data.get("tot_stck_evlu", 0.0)
                 buy_amount: float = total_assets * (buy_percent / 100.0)
                 buy_qty = int(buy_amount / current_price)
                 if buy_qty < 1:
@@ -1307,6 +1305,7 @@ class TradingBot:
             "tot_evlu_pfls": self.tot_evlu_pfls,
             "tot_pchs_amt": self.tot_pchs_amt,
             "tot_stck_evlu": self.tot_stck_evlu,
+            "total_eval": self.last_usd_balance + self.tot_stck_evlu,
             "positions": self.positions.to_dict(orient="records") if not self.positions.empty else [],
             "logs": self.logs,
             "slots": self.slot_manager.get_active_slots(),
