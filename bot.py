@@ -496,9 +496,10 @@ class TradingBot:
                     if price <= 0:
                         price = self.api.get_current_price(symbol)
                     sell_price: float = round(price * 0.99, 2)
+                    pos_avg: float = position.get("avg_price", 0.0)
                     order_ok: bool = self.api.place_order(symbol, qty, sell_price, is_buy=False)
                     if order_ok:
-                        self._log_trade(symbol, "매도", qty, sell_price, qty * sell_price, "[슬롯 제거] 전량 매도")
+                        self._log_trade(symbol, "매도", qty, sell_price, qty * sell_price, "[슬롯 제거] 전량 매도", avg_price=pos_avg)
                         self.log(f"📤 [슬롯 제거] {symbol} {qty}주 전량 매도 주문", send_tg=True)
                     else:
                         return {"success": False, "message": f"{symbol} 매도 주문 실패"}
@@ -786,7 +787,7 @@ class TradingBot:
         except Exception as e:
             print(f"[자산 스냅샷 저장 오류] {e}")
 
-    def _log_trade(self, symbol: str, side: str, qty: int, price: float, amount: float, reason: str) -> None:
+    def _log_trade(self, symbol: str, side: str, qty: int, price: float, amount: float, reason: str, avg_price: float = 0.0) -> None:
         """매매 내역을 trade_log.json에 기록합니다."""
         try:
             log: List[Dict[str, Any]] = []
@@ -794,7 +795,7 @@ class TradingBot:
                 with open(self.trade_log_file, 'r', encoding='utf-8') as f:
                     log = json.load(f)
 
-            log.append({
+            entry: Dict[str, Any] = {
                 "timestamp": datetime.now(ZoneInfo("Asia/Seoul")).strftime('%Y-%m-%d %H:%M:%S'),
                 "timestamp_et": self.get_eastern_time().strftime('%Y-%m-%d %H:%M:%S'),
                 "symbol": symbol,
@@ -804,7 +805,16 @@ class TradingBot:
                 "amount": round(amount, 2),
                 "reason": reason,
                 "balance_after": round(self.last_usd_balance, 2)
-            })
+            }
+
+            if side == "매도" and avg_price > 0:
+                pnl: float = (price - avg_price) * qty
+                pnl_pct: float = (price - avg_price) / avg_price * 100
+                entry["avg_price"] = round(avg_price, 2)
+                entry["pnl"] = round(pnl, 2)
+                entry["pnl_pct"] = round(pnl_pct, 2)
+
+            log.append(entry)
 
             if len(log) > 1000:
                 log = log[-1000:]
@@ -1134,7 +1144,8 @@ class TradingBot:
                 sold_amount: float = sell_qty * sell_price
                 self.last_usd_balance += sold_amount
                 self.last_krw_balance += sold_amount * self.exchange_rate
-                self._log_trade(symbol, "매도", sell_qty, sell_price, sold_amount, f"[{self._get_mode_label()}] 트레일링 스탑 ({drawdown*100:.1f}%)")
+                ts_avg: float = float(self.positions.loc[self.positions['symbol'] == symbol, 'avg_price'].values[0]) if not self.positions.empty and (self.positions['symbol'] == symbol).any() else 0.0
+                self._log_trade(symbol, "매도", sell_qty, sell_price, sold_amount, f"[{self._get_mode_label()}] 트레일링 스탑 ({drawdown*100:.1f}%)", avg_price=ts_avg)
                 
                 msg: str = f"🛡️ [부분 매도 체결]\n"
                 msg += f"종목: {symbol}\n"

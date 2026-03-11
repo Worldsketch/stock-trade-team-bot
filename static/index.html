@@ -1333,6 +1333,7 @@
                     <div class="text-right">
                         <p class="text-sm font-semibold text-white">${amtDisplay}</p>
                         <p class="text-xs text-slate-500">${t.qty}주 @ $${t.price}</p>
+                        ${!isBuy && t.pnl !== undefined ? `<p class="text-xs font-semibold mt-0.5 ${t.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${t.pnl >= 0 ? '+' : ''}${showKrw ? fmtKrw(t.pnl * rate) : fmtUsd(t.pnl)} (${t.pnl_pct >= 0 ? '+' : ''}${t.pnl_pct.toFixed(1)}%)</p>` : ''}
                         <p class="text-[10px] text-slate-600">${time}</p>
                     </div>
                 </div>`;
