@@ -561,10 +561,20 @@ def _generate_ai_report() -> Dict[str, Any]:
             realtime_price: float = 0.0
             price_source: str = "전일종가"
             if bot_instance:
-                realtime_price = bot_instance.api.get_current_price(sym)
+                try:
+                    realtime_price = bot_instance.api.get_current_price(sym)
+                except Exception:
+                    pass
+            if realtime_price <= 0:
+                try:
+                    info_price = ticker.info.get('regularMarketPrice', 0) or 0
+                    if info_price > 0:
+                        realtime_price = float(info_price)
+                except Exception:
+                    pass
             if realtime_price > 0:
                 cur = realtime_price
-                price_source = "실시간(프리장)"
+                price_source = "실시간"
             else:
                 cur = prev
                 prev = float(close.iloc[-2])
@@ -772,6 +782,17 @@ async def get_ai_report(username: str = Depends(get_current_username)) -> Dict[s
         return {"report": None, "message": "아직 생성된 리포트가 없습니다."}
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.post("/api/ai-report/refresh")
+async def refresh_ai_report(username: str = Depends(get_current_username)) -> Dict[str, Any]:
+    try:
+        result: Dict[str, Any] = _generate_ai_report()
+        if result.get("error"):
+            return {"success": False, "message": result["error"]}
+        return {"success": True, "report": result.get("report", ""), "generated_at": result.get("generated_at", "")}
+    except Exception as e:
+        return {"success": False, "message": f"리포트 생성 실패: {e}"}
 
 
 @app.get("/api/strategy-mode")
