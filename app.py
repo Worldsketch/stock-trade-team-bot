@@ -145,7 +145,8 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
         return _status_cache["data"]
 
     try:
-        data: Dict[str, Any] = bot_instance.api.get_balance_and_positions()
+        _item: str = bot_instance.symbols[0] if bot_instance.symbols else "AAPL"
+        data: Dict[str, Any] = bot_instance.api.get_balance_and_positions(item_cd=_item)
         current_symbols: list = bot_instance.symbols
         positions_list: list = []
         held_symbols: set = set()
@@ -272,7 +273,7 @@ async def manual_sell(request: Request, username: str = Depends(get_current_user
         return {"success": False, "message": f"잘못된 매도 비율: {percent}%"}
 
     try:
-        data: Dict[str, Any] = bot_instance.api.get_balance_and_positions()
+        data: Dict[str, Any] = bot_instance.api.get_balance_and_positions(item_cd=symbol)
         position = None
         for pos in data["positions"]:
             if pos["symbol"] == symbol and pos.get("quantity", 0) > 0:
@@ -364,9 +365,14 @@ async def cancel_order(request: Request, username: str = Depends(get_current_use
 _chart_cache: Dict[str, Any] = {}
 
 @app.get("/api/chart-data")
-async def get_chart_data(symbol: str = "NVDL", period: str = "5d", interval: str = "5m", username: str = Depends(get_current_username)) -> Dict[str, Any]:
+async def get_chart_data(symbol: str = "", period: str = "5d", interval: str = "5m", username: str = Depends(get_current_username)) -> Dict[str, Any]:
     import yfinance as yf
     import pandas as pd
+
+    if not symbol and bot_instance and bot_instance.symbols:
+        symbol = bot_instance.symbols[0]
+    if not symbol:
+        return {"candles": [], "symbol": "", "trades": []}
 
     cache_key: str = f"{symbol}_{period}_{interval}"
     now: float = time.time()

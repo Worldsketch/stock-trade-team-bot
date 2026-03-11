@@ -980,7 +980,8 @@ class TradingBot:
         return self.last_usd_balance
 
     def sync_positions(self) -> None:
-        data: Dict[str, Any] = self.api.get_balance_and_positions()
+        item_cd: str = self.symbols[0] if self.symbols else "AAPL"
+        data: Dict[str, Any] = self.api.get_balance_and_positions(item_cd=item_cd)
         new_usd: float = data["usd_balance"]
         if new_usd <= 0 and self.last_usd_balance > 100:
             self.log(f"⚠️ [API 이상] USD 예수금 $0 반환 (기존 ${self.last_usd_balance:,.2f} 유지)", send_tg=False)

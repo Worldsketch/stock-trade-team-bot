@@ -114,7 +114,7 @@ class KoreaInvestmentAPI:
         }
 
     @retry_api(max_retries=3)
-    def get_balance_and_positions(self) -> Dict[str, Any]:
+    def get_balance_and_positions(self, item_cd: str = "AAPL") -> Dict[str, Any]:
         if self.is_mock:
             # 모의투자는 기존 VTTT3012R 사용
             url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-present-balance"
@@ -177,7 +177,7 @@ class KoreaInvestmentAPI:
                     "ACNT_PRDT_CD": self.account_code,
                     "OVRS_EXCG_CD": "NASD",
                     "OVRS_ORD_UNPR": "1",
-                    "ITEM_CD": "TQQQ"
+                    "ITEM_CD": item_cd
                 }
                 bal_res = requests.get(bal_url, headers=bal_headers, params=bal_params)
                 bal_res.raise_for_status()
