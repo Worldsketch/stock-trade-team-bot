@@ -472,7 +472,8 @@ async def get_strategy_params(username: str = Depends(get_current_username)) -> 
                 if realtime_etf > 0:
                     etf_current_price[etf_sym] = realtime_etf
                 else:
-                    etf_hist = ticker.history(period="5d")
+                    etf_ticker = yf.Ticker(etf_sym)
+                    etf_hist = etf_ticker.history(period="5d")
                     if len(etf_hist) >= 1:
                         etf_current_price[etf_sym] = float(etf_hist['Close'].iloc[-1])
 

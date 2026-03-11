@@ -530,9 +530,12 @@ class TradingBot:
             current_price: float = float(hist['Close'].iloc[-1])
             delta: pd.Series = hist['Close'].diff()
             gain: pd.Series = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
-            loss: pd.Series = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
-            rs: pd.Series = gain / loss
+            loss_raw: pd.Series = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
+            loss_safe: pd.Series = loss_raw.replace(0.0, 1e-10)
+            rs: pd.Series = gain / loss_safe
             current_rsi: float = float((100 - (100 / (1 + rs))).iloc[-1])
+            if pd.isna(current_rsi):
+                current_rsi = 50.0
 
             self.is_uptrend[symbol] = current_price > sma_200
             self.is_rsi_oversold[symbol] = current_rsi < 30.0
@@ -846,9 +849,12 @@ class TradingBot:
 
                 delta: pd.Series = hist['Close'].diff()
                 gain: pd.Series = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
-                loss: pd.Series = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
-                rs: pd.Series = gain / loss
+                loss_raw: pd.Series = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
+                loss_safe: pd.Series = loss_raw.replace(0.0, 1e-10)
+                rs: pd.Series = gain / loss_safe
                 current_rsi: float = float((100 - (100 / (1 + rs))).iloc[-1])
+                if pd.isna(current_rsi):
+                    current_rsi = 50.0
                 is_oversold: bool = current_rsi < 30.0
                 self.is_rsi_oversold[etf_sym] = is_oversold
 
@@ -1284,6 +1290,7 @@ class TradingBot:
                     if now_et.weekday() < 5 and now_et.hour >= 16 and not self.daily_state.get('closing_report_sent', False):
                         self._send_closing_report()
                         self.daily_state['closing_report_sent'] = True
+                        self._save_daily_state()
                     
                 self._send_heartbeat()
 
