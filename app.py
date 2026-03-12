@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import time
 import secrets
@@ -18,123 +17,15 @@ from dotenv import load_dotenv
 
 from api import KoreaInvestmentAPI
 from bot import TradingBot
+from services.price_cache import BasePriceCache
+from services.trade_metrics import RealizedPnlCalculator, migrate_trade_pnl
 
 bot_instance: Optional[TradingBot] = None
 bot_thread: Optional[threading.Thread] = None
 _status_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
-_base_price_cache: Dict[str, Any] = {}
 _strategy_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
-_realized_pnl_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
-
-
-def _migrate_trade_pnl() -> None:
-    """기존 매도 기록에 pnl 정보가 없으면 매수 기록에서 평균가를 역산하여 소급 계산합니다."""
-    trade_file: str = "trade_log.json"
-    if not os.path.exists(trade_file):
-        return
-    try:
-        with open(trade_file, "r", encoding="utf-8") as f:
-            trades: List[Dict[str, Any]] = json.load(f)
-    except Exception:
-        return
-
-    needs_update: bool = any(t.get("side") == "매도" and "pnl" not in t for t in trades)
-    if not needs_update:
-        return
-
-    holdings: Dict[str, Dict[str, float]] = {}
-    for t in trades:
-        sym: str = t.get("symbol", "")
-        side: str = t.get("side", "")
-        qty: float = float(t.get("qty", 0))
-        price: float = float(t.get("price", 0))
-        if qty <= 0 or price <= 0:
-            continue
-
-        if sym not in holdings:
-            holdings[sym] = {"qty": 0.0, "avg_cost": 0.0}
-        h = holdings[sym]
-
-        if side == "매수":
-            total_cost: float = h["qty"] * h["avg_cost"] + qty * price
-            h["qty"] += qty
-            h["avg_cost"] = total_cost / h["qty"] if h["qty"] > 0 else 0.0
-        elif side == "매도" and "pnl" not in t:
-            if h["qty"] > 0 and h["avg_cost"] > 0:
-                avg: float = h["avg_cost"]
-                pnl: float = qty * (price - avg)
-                pnl_pct: float = (price - avg) / avg * 100
-                t["avg_price"] = round(avg, 2)
-                t["pnl"] = round(pnl, 2)
-                t["pnl_pct"] = round(pnl_pct, 2)
-                h["qty"] = max(0.0, h["qty"] - qty)
-
-    try:
-        with open(trade_file, "w", encoding="utf-8") as f:
-            json.dump(trades, f, indent=2, ensure_ascii=False)
-        print("[마이그레이션] 기존 매도 내역에 수익/손실 정보를 추가했습니다.")
-    except Exception as e:
-        print(f"[마이그레이션 오류] {e}")
-
-
-def _calc_realized_pnl() -> Dict[str, Any]:
-    """trade_log.json에서 평균단가 기반 누적 실현 손익을 계산합니다."""
-    now: float = time.time()
-    if _realized_pnl_cache["data"] and (now - _realized_pnl_cache["ts"]) < 60:
-        return _realized_pnl_cache["data"]
-
-    trade_file: str = "trade_log.json"
-    if not os.path.exists(trade_file):
-        return {"total": 0.0, "count": 0, "wins": 0, "losses": 0}
-
-    try:
-        with open(trade_file, "r", encoding="utf-8") as f:
-            trades: List[Dict[str, Any]] = json.load(f)
-    except Exception:
-        return {"total": 0.0, "count": 0, "wins": 0, "losses": 0}
-
-    holdings: Dict[str, Dict[str, float]] = {}
-    total_pnl: float = 0.0
-    sell_count: int = 0
-    win_count: int = 0
-    loss_count: int = 0
-
-    for t in trades:
-        sym: str = t.get("symbol", "")
-        side: str = t.get("side", "")
-        qty: float = float(t.get("qty", 0))
-        price: float = float(t.get("price", 0))
-        if qty <= 0 or price <= 0:
-            continue
-
-        if sym not in holdings:
-            holdings[sym] = {"qty": 0.0, "avg_cost": 0.0}
-
-        h = holdings[sym]
-        if side == "매수":
-            total_cost: float = h["qty"] * h["avg_cost"] + qty * price
-            h["qty"] += qty
-            h["avg_cost"] = total_cost / h["qty"] if h["qty"] > 0 else 0.0
-        elif side == "매도":
-            if h["qty"] > 0 and h["avg_cost"] > 0:
-                pnl: float = qty * (price - h["avg_cost"])
-                total_pnl += pnl
-                sell_count += 1
-                if pnl >= 0:
-                    win_count += 1
-                else:
-                    loss_count += 1
-                h["qty"] = max(0.0, h["qty"] - qty)
-
-    result: Dict[str, Any] = {
-        "total": round(total_pnl, 2),
-        "count": sell_count,
-        "wins": win_count,
-        "losses": loss_count,
-    }
-    _realized_pnl_cache["data"] = result
-    _realized_pnl_cache["ts"] = now
-    return result
+_base_price_cache: BasePriceCache = BasePriceCache(ttl_seconds=10.0)
+_realized_pnl: RealizedPnlCalculator = RealizedPnlCalculator(cache_ttl_seconds=60.0, trade_file="trade_log.json")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -156,7 +47,7 @@ async def lifespan(app: FastAPI):
     ai_thread = threading.Thread(target=_auto_generate_report, daemon=True)
     ai_thread.start()
 
-    _migrate_trade_pnl()
+    migrate_trade_pnl("trade_log.json")
 
     yield
     
@@ -191,19 +82,10 @@ async def read_index() -> str:
     with open("static/index.html", "r", encoding="utf-8") as f:
         return f.read()
 
-def _get_cached_base_price(base_sym: str) -> float:
-    now: float = time.time()
-    cached = _base_price_cache.get(base_sym)
-    if cached and (now - cached["ts"]) < 10:
-        return cached["price"]
-    price: float = 0.0
-    if bot_instance:
-        try:
-            price = bot_instance.api.get_current_price(base_sym)
-        except Exception:
-            pass
-    _base_price_cache[base_sym] = {"price": price, "ts": now}
-    return price
+def _fetch_base_price(base_sym: str) -> float:
+    if not bot_instance:
+        return 0.0
+    return bot_instance.api.get_current_price(base_sym)
 
 
 @app.get("/api/status")
@@ -236,7 +118,7 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
                     pass
             slot_info = next((s for s in bot_instance.slot_manager.get_active_slots() if s['symbol'] == sym), {})
             base_sym: str = slot_info.get("base_asset", sym)
-            base_price: float = _get_cached_base_price(base_sym) if base_sym != sym else 0.0
+            base_price: float = _base_price_cache.get_price(base_sym, _fetch_base_price) if base_sym != sym else 0.0
             positions_list.append({
                 "symbol": sym,
                 "quantity": pos.get("quantity", 0.0),
@@ -260,7 +142,7 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
                 except Exception:
                     pass
                 base_sym_fb: str = slot_info.get("base_asset", sym)
-                base_price_fb: float = _get_cached_base_price(base_sym_fb) if base_sym_fb != sym else 0.0
+                base_price_fb: float = _base_price_cache.get_price(base_sym_fb, _fetch_base_price) if base_sym_fb != sym else 0.0
                 positions_list.append({
                     "symbol": sym, "quantity": 0.0, "avg_price": 0.0,
                     "current_price": cur_price_fallback, "return_rate": 0.0,
@@ -302,7 +184,7 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
             "daily_pnl_usd": round(daily_pnl_usd, 2),
             "strategy_mode": bot_instance.strategy_mode,
             "auto_active": bot_instance.auto_active_mode,
-            "realized_pnl": _calc_realized_pnl(),
+            "realized_pnl": _realized_pnl.calculate(),
             "slots": bot_instance.slot_manager.get_active_slots(),
             "max_slots": bot_instance.slot_manager.max_slots,
             "market_open": bot_instance.is_active_trading_time(bot_instance.get_eastern_time()),

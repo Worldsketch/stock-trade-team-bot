@@ -93,7 +93,10 @@
 ```
 ├── api.py                # 한국투자증권 API 래퍼 (동적 거래소 탐색)
 ├── bot.py                # 매매 로직 (슬롯 동적 관리 + 전략 엔진)
-├── app.py                # FastAPI 웹 서버 + 슬롯/AI 리포트 API
+├── app.py                # FastAPI 웹 서버 + 슬롯/AI 리포트 API (엔드포인트 중심)
+├── services/
+│   ├── trade_metrics.py  # 실현손익 계산 + 기존 trade_log pnl 마이그레이션
+│   └── price_cache.py    # 기초자산 현재가 캐시
 ├── deploy.py             # 서버 배포 스크립트
 ├── slots.json            # 슬롯 상태 영속화 (자동 생성)
 ├── hwm_data.json         # 최고점(HWM) 추적 데이터 (자동 생성)
@@ -109,6 +112,11 @@
     ├── manifest.json     # PWA 매니페스트
     └── sw.js             # Service Worker
 ```
+
+## v3 리팩터링 포인트
+
+- `app.py`의 공통 계산/캐시 로직을 `services/`로 분리해 유지보수성과 재사용성을 개선
+- 기존 동작/엔드포인트는 유지하고, 책임 분리만 우선 적용 (안전한 1차 리팩터링)
 
 ## API 엔드포인트
 
