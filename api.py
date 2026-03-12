@@ -211,53 +211,57 @@ class KoreaInvestmentAPI:
             except Exception as e:
                 print(f"[실전 원화 예수금 조회 에러] {type(e).__name__}: {e}")
 
-            try:
-                pos_url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
-                pos_headers: Dict[str, str] = self.get_headers("TTTS3012R")
-                pos_params: Dict[str, str] = {
-                    "CANO": self.account_no,
-                    "ACNT_PRDT_CD": self.account_code,
-                    "OVRS_EXCG_CD": "NASD",
-                    "TR_CRCY_CD": "USD",
-                    "CTX_AREA_FK200": "",
-                    "CTX_AREA_NK200": ""
-                }
-                pos_res = requests.get(pos_url, headers=pos_headers, params=pos_params)
-                pos_res.raise_for_status()
-                pos_data = pos_res.json()
-                if pos_data.get('rt_cd') == '0' and isinstance(pos_data.get('output1'), list):
-                    for item in pos_data['output1']:
-                        symbol: Optional[str] = item.get('ovrs_pdno')
-                        qty: float = float(item.get('ovrs_cblc_qty', 0))
-                        avg_price: float = float(item.get('pchs_avg_pric', 0))
-                        current_price: float = float(item.get('now_pric2', 0))
-                        evlu_amt: float = float(item.get('ovrs_stck_evlu_amt', 0))
-                        evlu_pfls: float = float(item.get('frcr_evlu_pfls_amt', 0))
-                        evlu_pfls_rt: float = float(item.get('evlu_pfls_rt', 0))
-                        pchs_amt: float = float(item.get('frcr_pchs_amt1', 0))
-                        if qty > 0:
-                            positions.append({
-                                "symbol": symbol, "quantity": qty, "avg_price": avg_price,
-                                "current_price": current_price, "evlu_amt": evlu_amt,
-                                "evlu_pfls": evlu_pfls, "return_rate": evlu_pfls_rt,
-                                "pchs_amt": pchs_amt
-                            })
-                    o2 = pos_data.get('output2')
-                    if isinstance(o2, dict):
-                        summary: Dict[str, Any] = o2
-                    elif isinstance(o2, list) and len(o2) > 0:
-                        summary: Dict[str, Any] = o2[0]
-                    else:
-                        summary = None
-                    if summary:
-                        tot_evlu_pfls: float = float(summary.get('ovrs_tot_pfls', 0))
-                        tot_pchs_amt: float = float(summary.get('frcr_pchs_amt1', 0))
-                        tot_stck_evlu: float = float(summary.get('ovrs_stck_evlu_amt', 0))
-                        result["tot_evlu_pfls"] = tot_evlu_pfls
-                        result["tot_pchs_amt"] = tot_pchs_amt
-                        result["tot_stck_evlu"] = tot_stck_evlu
-            except Exception as e:
-                print(f"[실전 포지션 조회 에러] {type(e).__name__}: {e}")
+            tot_evlu_pfls_sum: float = 0.0
+            tot_pchs_amt_sum: float = 0.0
+            tot_stck_evlu_sum: float = 0.0
+            for excg in ("NASD", "NYSE", "AMEX"):
+                try:
+                    pos_url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
+                    pos_headers: Dict[str, str] = self.get_headers("TTTS3012R")
+                    pos_params: Dict[str, str] = {
+                        "CANO": self.account_no,
+                        "ACNT_PRDT_CD": self.account_code,
+                        "OVRS_EXCG_CD": excg,
+                        "TR_CRCY_CD": "USD",
+                        "CTX_AREA_FK200": "",
+                        "CTX_AREA_NK200": ""
+                    }
+                    pos_res = requests.get(pos_url, headers=pos_headers, params=pos_params)
+                    pos_res.raise_for_status()
+                    pos_data = pos_res.json()
+                    if pos_data.get('rt_cd') == '0' and isinstance(pos_data.get('output1'), list):
+                        for item in pos_data['output1']:
+                            symbol: Optional[str] = item.get('ovrs_pdno')
+                            qty: float = float(item.get('ovrs_cblc_qty', 0))
+                            avg_price: float = float(item.get('pchs_avg_pric', 0))
+                            current_price: float = float(item.get('now_pric2', 0))
+                            evlu_amt: float = float(item.get('ovrs_stck_evlu_amt', 0))
+                            evlu_pfls: float = float(item.get('frcr_evlu_pfls_amt', 0))
+                            evlu_pfls_rt: float = float(item.get('evlu_pfls_rt', 0))
+                            pchs_amt: float = float(item.get('frcr_pchs_amt1', 0))
+                            if qty > 0:
+                                positions.append({
+                                    "symbol": symbol, "quantity": qty, "avg_price": avg_price,
+                                    "current_price": current_price, "evlu_amt": evlu_amt,
+                                    "evlu_pfls": evlu_pfls, "return_rate": evlu_pfls_rt,
+                                    "pchs_amt": pchs_amt
+                                })
+                        o2 = pos_data.get('output2')
+                        if isinstance(o2, dict):
+                            summary = o2
+                        elif isinstance(o2, list) and len(o2) > 0:
+                            summary = o2[0]
+                        else:
+                            summary = None
+                        if summary:
+                            tot_evlu_pfls_sum += float(summary.get('ovrs_tot_pfls', 0))
+                            tot_pchs_amt_sum += float(summary.get('frcr_pchs_amt1', 0))
+                            tot_stck_evlu_sum += float(summary.get('ovrs_stck_evlu_amt', 0))
+                except Exception as e:
+                    print(f"[실전 포지션 조회 에러 ({excg})] {type(e).__name__}: {e}")
+            result["tot_evlu_pfls"] = tot_evlu_pfls_sum
+            result["tot_pchs_amt"] = tot_pchs_amt_sum
+            result["tot_stck_evlu"] = tot_stck_evlu_sum
 
             result["usd_balance"] = usd_balance
             result["positions"] = positions
@@ -328,44 +332,47 @@ class KoreaInvestmentAPI:
 
     @retry_api(max_retries=3)
     def get_pending_orders(self) -> List[Dict[str, Any]]:
-        tr_id: str = "VTTS3018R" if self.is_mock else "TTTS3018R"
-        url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-nccs"
-        headers: Dict[str, str] = self.get_headers(tr_id)
-        params: Dict[str, str] = {
-            "CANO": self.account_no,
-            "ACNT_PRDT_CD": self.account_code,
-            "OVRS_EXCG_CD": "NASD",
-            "SORT_SQN": "DS",
-            "CTX_AREA_FK200": "",
-            "CTX_AREA_NK200": ""
-        }
-        res = requests.get(url, headers=headers, params=params)
-        try:
-            data: Dict[str, Any] = res.json()
-        except Exception:
-            print(f"[미체결 조회 실패] HTTP {res.status_code}")
-            return []
-
-        if data.get('rt_cd') != '0':
-            print(f"[미체결 조회 실패] {data.get('msg1', '')}")
-            return []
-
         orders: List[Dict[str, Any]] = []
-        for item in data.get('output', []):
-            nccs_qty: int = int(float(item.get('nccs_qty', 0)))
-            if nccs_qty <= 0:
-                continue
-            orders.append({
-                "order_no": item.get('odno', ''),
-                "symbol": item.get('pdno', ''),
-                "side": "매수" if item.get('sll_buy_dvsn_cd') == '02' else "매도",
-                "order_qty": int(float(item.get('ft_ord_qty', 0))),
-                "filled_qty": int(float(item.get('ft_ccld_qty', 0))),
-                "remaining_qty": nccs_qty,
-                "order_price": float(item.get('ft_ord_unpr3', 0)),
-                "order_time": item.get('ord_tmd', ''),
-                "orgn_odno": item.get('orgn_odno', ''),
-            })
+        tr_id: str = "VTTS3018R" if self.is_mock else "TTTS3018R"
+        for excg in ("NASD", "NYSE", "AMEX"):
+            try:
+                url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-nccs"
+                headers: Dict[str, str] = self.get_headers(tr_id)
+                params: Dict[str, str] = {
+                    "CANO": self.account_no,
+                    "ACNT_PRDT_CD": self.account_code,
+                    "OVRS_EXCG_CD": excg,
+                    "SORT_SQN": "DS",
+                    "CTX_AREA_FK200": "",
+                    "CTX_AREA_NK200": ""
+                }
+                res = requests.get(url, headers=headers, params=params)
+                try:
+                    data: Dict[str, Any] = res.json()
+                except Exception:
+                    print(f"[미체결 조회 실패 ({excg})] HTTP {res.status_code}")
+                    continue
+
+                if data.get('rt_cd') != '0':
+                    continue
+
+                for item in data.get('output', []):
+                    nccs_qty: int = int(float(item.get('nccs_qty', 0)))
+                    if nccs_qty <= 0:
+                        continue
+                    orders.append({
+                        "order_no": item.get('odno', ''),
+                        "symbol": item.get('pdno', ''),
+                        "side": "매수" if item.get('sll_buy_dvsn_cd') == '02' else "매도",
+                        "order_qty": int(float(item.get('ft_ord_qty', 0))),
+                        "filled_qty": int(float(item.get('ft_ccld_qty', 0))),
+                        "remaining_qty": nccs_qty,
+                        "order_price": float(item.get('ft_ord_unpr3', 0)),
+                        "order_time": item.get('ord_tmd', ''),
+                        "orgn_odno": item.get('orgn_odno', ''),
+                    })
+            except Exception as e:
+                print(f"[미체결 조회 에러 ({excg})] {type(e).__name__}: {e}")
         return orders
 
     @retry_api(max_retries=3)
