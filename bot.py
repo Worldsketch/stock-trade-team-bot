@@ -1160,14 +1160,14 @@ class TradingBot:
             return f"자동({'공격' if self.auto_active_mode == 'aggressive' else '방어'})"
         return "공격" if self.strategy_mode == "aggressive" else "방어"
 
-    def _place_calculated_order(self, symbol: str, price: float, target_budget: float, tier_name: str) -> bool:
+    def _place_calculated_order(self, symbol: str, price: float, target_budget: float, tier_name: str, buy_ratio: float = 0.0, prev_close: float = 0.0) -> bool:
         buy_price: float = round(price * 1.005, 2)
         qty_to_buy: int = int(target_budget / buy_price)
         if target_budget > 0 and qty_to_buy == 0:
             qty_to_buy = 1
-            
+
         required_cash: float = qty_to_buy * buy_price
-        
+
         if qty_to_buy > 0 and self.last_usd_balance >= required_cash:
             success: bool = self.api.place_order(symbol, qty_to_buy, buy_price, is_buy=True)
             if success:
@@ -1176,22 +1176,39 @@ class TradingBot:
                 mode_label: str = self._get_mode_label()
                 self.log(f"✅ [{mode_label}|{tier_name}] {symbol} 매수 체결: {qty_to_buy}주 (${required_cash:.2f})")
                 self._log_trade(symbol, "매수", qty_to_buy, buy_price, required_cash, f"[{mode_label}] {tier_name}")
-                
+
                 state: Dict[str, Any] = self.daily_state.get(symbol, {})
                 used: int = sum([state.get('base', False), state.get('t2', False), state.get('t4', False), state.get('t8', False)])
                 rem: int = max(0, 4 - used)
-                
-                tg_msg: str = f"🛒 [매수 체결]\n"
-                tg_msg += f"종목: {symbol}\n"
-                tg_msg += f"모드: {mode_label} | 구분: {tier_name}\n"
-                tg_msg += f"단가/수량: ${buy_price:.2f} x {qty_to_buy}주\n"
-                tg_msg += f"총액: ${required_cash:,.2f} (약 {required_cash * self.exchange_rate:,.0f}원)\n"
-                tg_msg += f"금일 남은 매수 기회: {rem}회\n"
-                tg_msg += f"잔여 현금: ${self.last_usd_balance:,.2f} (약 {self.last_krw_balance:,.0f}원)"
+
+                held_qty: float = 0.0
+                held_avg: float = 0.0
+                if not self.positions.empty:
+                    mask = self.positions['symbol'] == symbol
+                    if mask.any():
+                        held_qty = float(self.positions.loc[mask, 'quantity'].values[0])
+                        held_avg = float(self.positions.loc[mask, 'avg_price'].values[0])
+
+                krw_amt: float = required_cash * self.exchange_rate
+                krw_suffix: str = f"{krw_amt/10000:,.0f}만" if krw_amt >= 10000 else f"{krw_amt:,.0f}"
+
+                tg_msg: str = f"🛒 [매수 체결] {symbol}\n"
+                tg_msg += f"📊 모드: {mode_label}\n"
+                if prev_close > 0:
+                    drop_pct: float = (price - prev_close) / prev_close * 100
+                    tg_msg += f"📉 사유: 전일종가 ${prev_close:.2f} → 현재 ${price:.2f} ({drop_pct:+.1f}%)\n"
+                else:
+                    tg_msg += f"📉 사유: {tier_name}\n"
+                tg_msg += f"💰 매수: ${buy_price:.2f} x {qty_to_buy}주 = ${required_cash:,.2f} (약 {krw_suffix}원)\n"
+                if buy_ratio > 0:
+                    tg_msg += f"📐 비율: 총자산의 {buy_ratio*100:.1f}%\n"
+                if held_qty > 0:
+                    tg_msg += f"📦 보유: 총 {int(held_qty)}주 (평균 ${held_avg:.2f})\n"
+                tg_msg += f"🏦 잔여현금: ${self.last_usd_balance:,.2f} (약 {self.last_krw_balance/10000:,.0f}만원) | 남은 매수: {rem}회"
                 self.send_telegram_message(tg_msg)
             else:
                 self.log(f"❌ [{self._get_mode_label()}|{tier_name}] {symbol} 매수 실패: {qty_to_buy}주 (${required_cash:.2f})")
-                
+
             return success
         return False
 
@@ -1243,7 +1260,7 @@ class TradingBot:
                     buy_now = True
                 if buy_now:
                     base_buy_amt: float = total_equity * self.base_buy_ratio
-                    if self._place_calculated_order(symbol, price, base_buy_amt, "매일 기본적립(저점)"):
+                    if self._place_calculated_order(symbol, price, base_buy_amt, "매일 기본적립(저점)", buy_ratio=self.base_buy_ratio):
                         state['base'] = True
                         self.daily_state[symbol] = state
                         self._save_daily_state()
@@ -1256,7 +1273,7 @@ class TradingBot:
             if qty > 0 and is_buy_allowed:
                 if intraday_drop <= self.dca_2_threshold and not state['t2']:
                     w2_amt: float = total_equity * self.w2_ratio
-                    if self._place_calculated_order(symbol, price, w2_amt, f"-3% 물타기(전일종가 대비 {intraday_drop*100:.1f}%)"):
+                    if self._place_calculated_order(symbol, price, w2_amt, "-3% DCA", buy_ratio=self.w2_ratio, prev_close=prev_close):
                         state['t2'] = True
                         self.daily_state[symbol] = state
                         self._save_daily_state()
@@ -1264,7 +1281,7 @@ class TradingBot:
                         
                 if intraday_drop <= self.dca_4_threshold and not state['t4']:
                     w4_amt: float = total_equity * self.w4_ratio
-                    if self._place_calculated_order(symbol, price, w4_amt, f"-5% 물타기(전일종가 대비 {intraday_drop*100:.1f}%)"):
+                    if self._place_calculated_order(symbol, price, w4_amt, "-5% DCA", buy_ratio=self.w4_ratio, prev_close=prev_close):
                         state['t4'] = True
                         self.daily_state[symbol] = state
                         self._save_daily_state()
@@ -1272,7 +1289,7 @@ class TradingBot:
                         
                 if intraday_drop <= self.dca_8_threshold and not state['t8']:
                     w8_amt: float = total_equity * self.w8_ratio
-                    if self._place_calculated_order(symbol, price, w8_amt, f"-7% 물타기(전일종가 대비 {intraday_drop*100:.1f}%)"):
+                    if self._place_calculated_order(symbol, price, w8_amt, "-7% DCA", buy_ratio=self.w8_ratio, prev_close=prev_close):
                         state['t8'] = True
                         self.daily_state[symbol] = state
                         self._save_daily_state()
@@ -1281,7 +1298,7 @@ class TradingBot:
             # 3. RSI<30 과매도 보너스 매수 (하루 1회, SMA200 무관)
             if qty > 0 and not state.get('rsi_bonus', False) and self.is_rsi_oversold.get(symbol, False):
                 rsi_amt: float = total_equity * self.w4_ratio
-                if self._place_calculated_order(symbol, price, rsi_amt, "⚡ RSI 과매도 보너스"):
+                if self._place_calculated_order(symbol, price, rsi_amt, "⚡ RSI 과매도 보너스", buy_ratio=self.w4_ratio):
                     state['rsi_bonus'] = True
                     self.daily_state[symbol] = state
                     self._save_daily_state()
