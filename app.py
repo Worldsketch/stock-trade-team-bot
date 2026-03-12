@@ -406,7 +406,7 @@ async def manual_sell(request: Request, username: str = Depends(get_current_user
             bot_instance.log(f"📤 [수동매도 접수] {symbol} {sell_qty}주 {order_desc} ({label})")
             manual_avg: float = position.get("avg_price", 0.0)
             bot_instance._log_trade(symbol, "매도", sell_qty, sell_price, est_amount, f"[{bot_instance._get_mode_label()}] 수동 매도 ({label})", avg_price=manual_avg)
-            t = threading.Thread(target=_monitor_sell_fill, args=(symbol, sell_qty, current_price, label), daemon=True)
+            t = threading.Thread(target=_monitor_sell_fill, args=(symbol, sell_qty, sell_price, label), daemon=True)
             t.start()
             return {"success": True, "message": f"{symbol} {sell_qty}주 매도 주문 완료", "qty": sell_qty, "price": sell_price}
         else:
