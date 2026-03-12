@@ -17,8 +17,11 @@ from dotenv import load_dotenv
 
 from api import KoreaInvestmentAPI
 from bot import TradingBot
-from routes.slots_strategy import create_slots_strategy_router
+from routes.ai import create_ai_router
+from routes.chart import create_chart_router
 from routes.trading import create_trading_router
+from routes.slots_strategy import create_slots_strategy_router
+from routes.status import create_status_router
 from services.price_cache import BasePriceCache
 from services.trade_metrics import RealizedPnlCalculator, migrate_trade_pnl
 
@@ -84,124 +87,6 @@ async def read_index() -> str:
     with open("static/index.html", "r", encoding="utf-8") as f:
         return f.read()
 
-def _fetch_base_price(base_sym: str) -> float:
-    if not bot_instance:
-        return 0.0
-    return bot_instance.api.get_current_price(base_sym)
-
-
-@app.get("/api/status")
-async def get_status(username: str = Depends(get_current_username)) -> Dict[str, Any]:
-    global _status_cache
-    if not bot_instance:
-        return {"error": "Bot is not initialized."}
-
-    now: float = time.time()
-    if _status_cache["data"] and (now - _status_cache["ts"]) < 5:
-        return _status_cache["data"]
-
-    try:
-        _item: str = bot_instance.symbols[0] if bot_instance.symbols else "AAPL"
-        data: Dict[str, Any] = bot_instance.api.get_balance_and_positions(item_cd=_item, symbols=bot_instance.symbols)
-        current_symbols: list = bot_instance.symbols
-        positions_list: list = []
-        held_symbols: set = set()
-
-        for pos in data["positions"]:
-            sym: str = pos["symbol"]
-            if sym not in current_symbols:
-                continue
-            held_symbols.add(sym)
-            cur_price: float = pos.get("current_price", 0.0)
-            if cur_price <= 0:
-                try:
-                    cur_price = bot_instance.api.get_current_price(sym)
-                except Exception:
-                    pass
-            slot_info = next((s for s in bot_instance.slot_manager.get_active_slots() if s['symbol'] == sym), {})
-            base_sym: str = slot_info.get("base_asset", sym)
-            base_price: float = _base_price_cache.get_price(base_sym, _fetch_base_price) if base_sym != sym else 0.0
-            positions_list.append({
-                "symbol": sym,
-                "quantity": pos.get("quantity", 0.0),
-                "avg_price": pos.get("avg_price", 0.0),
-                "current_price": cur_price,
-                "evlu_amt": pos.get("evlu_amt", 0.0),
-                "evlu_pfls": pos.get("evlu_pfls", 0.0),
-                "return_rate": pos.get("return_rate", 0.0),
-                "pchs_amt": pos.get("pchs_amt", 0.0),
-                "is_leveraged": slot_info.get("is_leveraged", False),
-                "base_asset": base_sym,
-                "base_price": base_price,
-            })
-
-        for sym in current_symbols:
-            if sym not in held_symbols:
-                slot_info = next((s for s in bot_instance.slot_manager.get_active_slots() if s['symbol'] == sym), {})
-                cur_price_fallback: float = 0.0
-                try:
-                    cur_price_fallback = bot_instance.api.get_current_price(sym)
-                except Exception:
-                    pass
-                base_sym_fb: str = slot_info.get("base_asset", sym)
-                base_price_fb: float = _base_price_cache.get_price(base_sym_fb, _fetch_base_price) if base_sym_fb != sym else 0.0
-                positions_list.append({
-                    "symbol": sym, "quantity": 0.0, "avg_price": 0.0,
-                    "current_price": cur_price_fallback, "return_rate": 0.0,
-                    "is_leveraged": slot_info.get("is_leveraged", False),
-                    "base_asset": base_sym_fb,
-                    "base_price": base_price_fb,
-                })
-
-        slot_order: Dict[str, int] = {s['symbol']: i for i, s in enumerate(bot_instance.slot_manager.get_active_slots())}
-        positions_list.sort(key=lambda p: slot_order.get(p["symbol"], 999))
-
-        api_exrt: float = data.get("exchange_rate", 0.0)
-        if api_exrt > 0:
-            bot_instance.exchange_rate = api_exrt
-        elif not bot_instance.is_running:
-            bot_instance.update_exchange_rate()
-
-        daily_pnl_usd: float = 0.0
-        for pos in positions_list:
-            sym = pos["symbol"]
-            qty = pos.get("quantity", 0.0)
-            cur = pos.get("current_price", 0.0)
-            prev = bot_instance.prev_close.get(sym, 0.0)
-            if qty > 0 and prev > 0 and cur > 0:
-                daily_pnl_usd += (cur - prev) * qty
-
-        result: Dict[str, Any] = {
-            "is_running": bot_instance.is_running,
-            "usd_balance": data["usd_balance"],
-            "krw_balance": data.get("krw_balance", 0.0),
-            "krw_cash": data.get("krw_cash", 0.0),
-            "exchange_rate": bot_instance.exchange_rate,
-            "positions": positions_list,
-            "logs": bot_instance.logs,
-            "tot_evlu_pfls": data.get("tot_evlu_pfls", 0.0),
-            "tot_pchs_amt": data.get("tot_pchs_amt", 0.0),
-            "tot_stck_evlu": data.get("tot_stck_evlu", 0.0),
-            "total_eval": data["usd_balance"] + data.get("tot_stck_evlu", 0.0),
-            "daily_pnl_usd": round(daily_pnl_usd, 2),
-            "strategy_mode": bot_instance.strategy_mode,
-            "auto_active": bot_instance.auto_active_mode,
-            "realized_pnl": _realized_pnl.calculate(),
-            "slots": bot_instance.slot_manager.get_active_slots(),
-            "max_slots": bot_instance.slot_manager.max_slots,
-            "market_open": bot_instance.is_active_trading_time(bot_instance.get_eastern_time()),
-            "is_dst": bool(bot_instance.get_eastern_time().dst()),
-            "et_time": bot_instance.get_eastern_time().strftime("%H:%M"),
-        }
-    except Exception as e:
-        try:
-            result = bot_instance.get_status()
-        except Exception:
-            result = {"error": f"상태 조회 실패: {e}", "is_running": False, "positions": []}
-
-    _status_cache = {"data": result, "ts": now}
-    return result
-
 def _monitor_sell_fill(symbol: str, qty: int, price: float, label: str) -> None:
     for i in range(60):
         time.sleep(5)
@@ -230,9 +115,18 @@ def _get_bot_instance() -> Optional[TradingBot]:
     return bot_instance
 
 def _invalidate_status_cache() -> None:
-    global _status_cache
-    _status_cache = {"data": None, "ts": 0.0}
+    _status_cache["data"] = None
+    _status_cache["ts"] = 0.0
 
+app.include_router(
+    create_status_router(
+        auth_dependency=get_current_username,
+        get_bot=_get_bot_instance,
+        status_cache=_status_cache,
+        base_price_cache=_base_price_cache,
+        realized_pnl=_realized_pnl,
+    )
+)
 app.include_router(
     create_trading_router(
         auth_dependency=get_current_username,
@@ -248,87 +142,19 @@ app.include_router(
         invalidate_status_cache=_invalidate_status_cache,
     )
 )
-
-
-_chart_cache: Dict[str, Any] = {}
-
-@app.get("/api/chart-data")
-async def get_chart_data(symbol: str = "", period: str = "5d", interval: str = "5m", username: str = Depends(get_current_username)) -> Dict[str, Any]:
-    import yfinance as yf
-    import pandas as pd
-
-    if not symbol and bot_instance and bot_instance.symbols:
-        symbol = bot_instance.symbols[0]
-    if not symbol:
-        return {"candles": [], "symbol": "", "trades": []}
-
-    cache_key: str = f"{symbol}_{period}_{interval}"
-    now: float = time.time()
-    ttl: float = 30.0 if interval in ("1m", "5m") else 300.0
-    cached = _chart_cache.get(cache_key)
-    if cached and (now - cached["ts"]) < ttl:
-        return cached["data"]
-
-    try:
-        ticker = yf.Ticker(symbol)
-        use_prepost: bool = interval not in ("1d", "1wk", "1mo")
-        hist = ticker.history(period=period, interval=interval, prepost=use_prepost)
-        if hist.empty:
-            return {"candles": [], "symbol": symbol}
-
-        timestamps: pd.Series = hist.index.astype('int64') // 10**9
-        candles: list = pd.DataFrame({
-            "time": timestamps,
-            "open": hist["Open"].round(2),
-            "high": hist["High"].round(2),
-            "low": hist["Low"].round(2),
-            "close": hist["Close"].round(2),
-            "volume": hist["Volume"].astype(int),
-        }).to_dict("records")
-
-        trades: list = []
-        trade_file: str = "trade_log.json"
-        if os.path.exists(trade_file):
-            with open(trade_file, "r", encoding="utf-8") as f:
-                all_trades = json.load(f)
-            for t in all_trades:
-                if t.get("symbol") == symbol:
-                    trades.append({"time": t.get("timestamp", ""), "side": t.get("side", ""), "price": t.get("price", 0), "qty": t.get("qty", 0)})
-
-        result: Dict[str, Any] = {"candles": candles, "symbol": symbol, "trades": trades}
-        _chart_cache[cache_key] = {"data": result, "ts": now}
-        return result
-    except Exception as e:
-        return {"candles": [], "symbol": symbol, "error": str(e)}
-
-
-@app.get("/api/equity-history")
-async def get_equity_history(username: str = Depends(get_current_username)) -> Dict[str, Any]:
-    try:
-        equity_file: str = "equity_log.json"
-        if os.path.exists(equity_file):
-            with open(equity_file, 'r', encoding='utf-8') as f:
-                import json as _json
-                history = _json.load(f)
-            return {"history": history}
-        return {"history": []}
-    except Exception as e:
-        return {"history": [], "error": str(e)}
-
-
-@app.get("/api/trade-history")
-async def get_trade_history(username: str = Depends(get_current_username)) -> Dict[str, Any]:
-    try:
-        trade_file: str = "trade_log.json"
-        if os.path.exists(trade_file):
-            import json as _json
-            with open(trade_file, 'r', encoding='utf-8') as f:
-                trades = _json.load(f)
-            trades.reverse()
-            return {"trades": trades}
-        return {"trades": []}
-    except Exception as e:
-        return {"trades": [], "error": str(e)}
+app.include_router(
+    create_chart_router(
+        auth_dependency=get_current_username,
+        get_bot=_get_bot_instance,
+    )
+)
+app.include_router(
+    create_ai_router(
+        auth_dependency=get_current_username,
+        generate_ai_report=lambda: _generate_ai_report(),
+        ai_report_file="ai_report.json",
+    )
+)
 
 
 @app.get("/api/strategy-params")
@@ -668,28 +494,6 @@ def _auto_generate_report() -> None:
         except Exception:
             pass
         _time.sleep(60)
-
-
-@app.get("/api/ai-report")
-async def get_ai_report(username: str = Depends(get_current_username)) -> Dict[str, Any]:
-    try:
-        if os.path.exists(AI_REPORT_FILE):
-            with open(AI_REPORT_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return {"report": None, "message": "아직 생성된 리포트가 없습니다."}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.post("/api/ai-report/refresh")
-async def refresh_ai_report(username: str = Depends(get_current_username)) -> Dict[str, Any]:
-    try:
-        result: Dict[str, Any] = _generate_ai_report()
-        if result.get("error"):
-            return {"success": False, "message": result["error"]}
-        return {"success": True, "report": result.get("report", ""), "generated_at": result.get("generated_at", "")}
-    except Exception as e:
-        return {"success": False, "message": f"리포트 생성 실패: {e}"}
 
 
 @app.post("/api/start")

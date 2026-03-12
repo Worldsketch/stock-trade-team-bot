@@ -1,8 +1,6 @@
 import threading
 import time
-from datetime import datetime
 from typing import Any, Callable, Dict, Optional
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Request
 
@@ -57,8 +55,8 @@ def create_trading_router(
             if current_price <= 0:
                 return {"success": False, "message": f"{symbol} 현재가를 가져올 수 없습니다."}
 
-            now_et = datetime.now(ZoneInfo("America/New_York"))
-            is_regular: bool = (9 <= now_et.hour < 16) and (now_et.weekday() < 5)
+            now_et = bot.get_eastern_time()
+            is_regular: bool = bot.is_regular_market_open(now_et)
             if is_regular:
                 sell_price: float = round(current_price * 0.98, 2)
                 order_desc: str = f"시장가 (하한 ${sell_price:.2f})"
