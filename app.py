@@ -170,8 +170,12 @@ app = FastAPI(title="한국투자증권 자동매매 봇", lifespan=lifespan)
 security = HTTPBasic()
 
 def get_current_username(credentials: HTTPBasicCredentials = Depends(security)):
-    correct_username = secrets.compare_digest(credentials.username, os.getenv("ADMIN_USERNAME", "admin"))
-    correct_password = secrets.compare_digest(credentials.password, os.getenv("ADMIN_PASSWORD", "admin123!"))
+    admin_user: str = os.getenv("ADMIN_USERNAME", "")
+    admin_pass: str = os.getenv("ADMIN_PASSWORD", "")
+    if not admin_user or not admin_pass:
+        raise HTTPException(status_code=500, detail="ADMIN_USERNAME/ADMIN_PASSWORD 환경변수가 설정되지 않았습니다.")
+    correct_username = secrets.compare_digest(credentials.username, admin_user)
+    correct_password = secrets.compare_digest(credentials.password, admin_pass)
     if not (correct_username and correct_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -394,14 +398,14 @@ async def manual_sell(request: Request, username: str = Depends(get_current_user
         if success:
             bot_instance.manual_sell_block[symbol] = time.time()
             _status_cache = {"data": None, "ts": 0.0}
-            est_amount: float = sell_qty * current_price
+            est_amount: float = sell_qty * sell_price
             krw_est: float = est_amount * bot_instance.exchange_rate
             label: str = f"{percent}%"
             msg: str = f"📤 [수동 매도 주문 접수]\n종목: {symbol}\n수량: {sell_qty}주 ({label})\n{order_desc}\n예상 금액: ${est_amount:,.2f} (약 {krw_est:,.0f}원)"
             bot_instance.send_telegram_message(msg)
             bot_instance.log(f"📤 [수동매도 접수] {symbol} {sell_qty}주 {order_desc} ({label})")
             manual_avg: float = position.get("avg_price", 0.0)
-            bot_instance._log_trade(symbol, "매도", sell_qty, sell_price, sell_qty * current_price, f"[{bot_instance._get_mode_label()}] 수동 매도 ({label})", avg_price=manual_avg)
+            bot_instance._log_trade(symbol, "매도", sell_qty, sell_price, est_amount, f"[{bot_instance._get_mode_label()}] 수동 매도 ({label})", avg_price=manual_avg)
             t = threading.Thread(target=_monitor_sell_fill, args=(symbol, sell_qty, current_price, label), daemon=True)
             t.start()
             return {"success": True, "message": f"{symbol} {sell_qty}주 매도 주문 완료", "qty": sell_qty, "price": sell_price}
