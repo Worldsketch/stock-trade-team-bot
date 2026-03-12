@@ -113,8 +113,21 @@ class KoreaInvestmentAPI:
             "tr_id": tr_id
         }
 
+    def _get_required_exchanges(self, symbols: Optional[List[str]] = None) -> List[str]:
+        """슬롯 종목들의 거래소를 파악하여 조회가 필요한 거래소 목록을 반환합니다."""
+        if not symbols:
+            return ["NASD"]
+        if "__ALL__" in symbols:
+            return ["NASD", "NYSE", "AMEX"]
+        excg_set: set = set()
+        for sym in symbols:
+            excg_set.add(self._get_exchange_code(sym, "long"))
+        if not excg_set:
+            return ["NASD"]
+        return list(excg_set)
+
     @retry_api(max_retries=3)
-    def get_balance_and_positions(self, item_cd: str = "AAPL") -> Dict[str, Any]:
+    def get_balance_and_positions(self, item_cd: str = "AAPL", symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         if self.is_mock:
             # 모의투자는 기존 VTTT3012R 사용
             url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-present-balance"
@@ -214,7 +227,8 @@ class KoreaInvestmentAPI:
             tot_evlu_pfls_sum: float = 0.0
             tot_pchs_amt_sum: float = 0.0
             tot_stck_evlu_sum: float = 0.0
-            for excg in ("NASD", "NYSE", "AMEX"):
+            required_excgs: List[str] = self._get_required_exchanges(symbols)
+            for excg in required_excgs:
                 try:
                     pos_url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
                     pos_headers: Dict[str, str] = self.get_headers("TTTS3012R")
@@ -331,10 +345,11 @@ class KoreaInvestmentAPI:
         return True
 
     @retry_api(max_retries=3)
-    def get_pending_orders(self) -> List[Dict[str, Any]]:
+    def get_pending_orders(self, symbols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         orders: List[Dict[str, Any]] = []
         tr_id: str = "VTTS3018R" if self.is_mock else "TTTS3018R"
-        for excg in ("NASD", "NYSE", "AMEX"):
+        required_excgs: List[str] = self._get_required_exchanges(symbols)
+        for excg in required_excgs:
             try:
                 url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-nccs"
                 headers: Dict[str, str] = self.get_headers(tr_id)
@@ -408,7 +423,7 @@ class KoreaInvestmentAPI:
     def cancel_all_orders(self) -> None:
         print("[API] 모든 미체결 주문 취소 요청을 전송합니다.")
         try:
-            orders: List[Dict[str, Any]] = self.get_pending_orders()
+            orders: List[Dict[str, Any]] = self.get_pending_orders(symbols=["__ALL__"])
             for order in orders:
                 self.cancel_order(order['order_no'], order['symbol'], order['remaining_qty'])
                 time.sleep(0.5)

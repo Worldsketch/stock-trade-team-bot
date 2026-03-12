@@ -218,7 +218,7 @@ async def get_status(username: str = Depends(get_current_username)) -> Dict[str,
 
     try:
         _item: str = bot_instance.symbols[0] if bot_instance.symbols else "AAPL"
-        data: Dict[str, Any] = bot_instance.api.get_balance_and_positions(item_cd=_item)
+        data: Dict[str, Any] = bot_instance.api.get_balance_and_positions(item_cd=_item, symbols=bot_instance.symbols)
         current_symbols: list = bot_instance.symbols
         positions_list: list = []
         held_symbols: set = set()
@@ -324,7 +324,7 @@ def _monitor_sell_fill(symbol: str, qty: int, price: float, label: str) -> None:
         if not bot_instance:
             return
         try:
-            orders = bot_instance.api.get_pending_orders()
+            orders = bot_instance.api.get_pending_orders(symbols=bot_instance.symbols)
             still_pending: bool = any(
                 o.get("symbol") == symbol and int(o.get("remaining_qty", 0)) > 0
                 for o in orders
@@ -362,7 +362,7 @@ async def manual_sell(request: Request, username: str = Depends(get_current_user
         return {"success": False, "message": f"잘못된 매도 비율: {percent}%"}
 
     try:
-        data: Dict[str, Any] = bot_instance.api.get_balance_and_positions(item_cd=symbol)
+        data: Dict[str, Any] = bot_instance.api.get_balance_and_positions(item_cd=symbol, symbols=bot_instance.symbols)
         position = None
         for pos in data["positions"]:
             if pos["symbol"] == symbol and pos.get("quantity", 0) > 0:
@@ -420,7 +420,7 @@ async def get_pending_orders(username: str = Depends(get_current_username)) -> D
     if not bot_instance:
         return {"orders": []}
     try:
-        orders = bot_instance.api.get_pending_orders()
+        orders = bot_instance.api.get_pending_orders(symbols=bot_instance.symbols)
         return {"orders": orders}
     except Exception as e:
         return {"orders": [], "error": str(e)}

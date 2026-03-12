@@ -336,7 +336,7 @@ class TradingBot:
         if self.slot_manager.get_active_slots():
             return
         try:
-            data: Dict[str, Any] = self.api.get_balance_and_positions()
+            data: Dict[str, Any] = self.api.get_balance_and_positions(symbols=self.symbols)
             held: List[Dict[str, Any]] = [p for p in data["positions"] if p.get("quantity", 0) > 0]
             if not held:
                 print("[자동 등록] 보유 종목이 없습니다.")
@@ -401,7 +401,7 @@ class TradingBot:
         already_held: bool = False
         bal_data: Dict[str, Any] = {}
         try:
-            bal_data = self.api.get_balance_and_positions()
+            bal_data = self.api.get_balance_and_positions(symbols=self.symbols + [symbol])
             for pos in bal_data.get("positions", []):
                 if pos["symbol"] == symbol and pos.get("quantity", 0) > 0:
                     already_held = True
@@ -434,7 +434,7 @@ class TradingBot:
         if buy_percent > 0:
             try:
                 if not bal_data:
-                    bal_data = self.api.get_balance_and_positions()
+                    bal_data = self.api.get_balance_and_positions(symbols=self.symbols + [symbol])
                 total_assets: float = bal_data.get("usd_balance", 0.0) + bal_data.get("tot_stck_evlu", 0.0)
                 buy_amount: float = total_assets * (buy_percent / 100.0)
                 buy_qty = int(buy_amount / current_price)
@@ -483,7 +483,7 @@ class TradingBot:
 
         if sell_all:
             try:
-                data: Dict[str, Any] = self.api.get_balance_and_positions()
+                data: Dict[str, Any] = self.api.get_balance_and_positions(symbols=self.symbols)
                 position: Optional[Dict[str, Any]] = None
                 for pos in data["positions"]:
                     if pos["symbol"] == symbol and pos.get("quantity", 0) > 0:
@@ -994,7 +994,7 @@ class TradingBot:
 
     def sync_positions(self) -> None:
         item_cd: str = self.symbols[0] if self.symbols else "AAPL"
-        data: Dict[str, Any] = self.api.get_balance_and_positions(item_cd=item_cd)
+        data: Dict[str, Any] = self.api.get_balance_and_positions(item_cd=item_cd, symbols=self.symbols)
         new_usd: float = data["usd_balance"]
         if new_usd <= 0 and self.last_usd_balance > 100:
             self.log(f"⚠️ [API 이상] USD 예수금 $0 반환 (기존 ${self.last_usd_balance:,.2f} 유지)", send_tg=False)
