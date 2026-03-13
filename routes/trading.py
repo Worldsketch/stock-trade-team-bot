@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, Optional
 from fastapi import APIRouter, Depends, Request
 
 from bot import TradingBot
+from services.live_data_cache import LiveDataCache
 
 
 def create_trading_router(
@@ -12,6 +13,7 @@ def create_trading_router(
     get_bot: Callable[[], Optional[TradingBot]],
     invalidate_status_cache: Callable[[], None],
     monitor_sell_fill: Callable[[str, int, float, str], None],
+    live_data_cache: Optional[LiveDataCache] = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -34,12 +36,29 @@ def create_trading_router(
             return {"success": False, "message": f"잘못된 매도 비율: {percent}%"}
 
         try:
-            data: Dict[str, Any] = bot.api.get_balance_and_positions(item_cd=symbol, symbols=bot.symbols)
+            data: Optional[Dict[str, Any]] = None
+            used_cached_portfolio: bool = False
+            if live_data_cache:
+                data = live_data_cache.get_portfolio(ttl_sec=3.0)
+                used_cached_portfolio = data is not None
+            if not data:
+                data = bot.api.get_balance_and_positions(item_cd=symbol, symbols=bot.symbols)
+                if live_data_cache:
+                    live_data_cache.set_portfolio(data)
             position = None
             for pos in data["positions"]:
                 if pos["symbol"] == symbol and pos.get("quantity", 0) > 0:
                     position = pos
                     break
+
+            if not position and used_cached_portfolio:
+                data = bot.api.get_balance_and_positions(item_cd=symbol, symbols=bot.symbols)
+                if live_data_cache:
+                    live_data_cache.set_portfolio(data)
+                for pos in data["positions"]:
+                    if pos["symbol"] == symbol and pos.get("quantity", 0) > 0:
+                        position = pos
+                        break
 
             if not position:
                 return {"success": False, "message": f"{symbol} 보유 포지션이 없습니다."}
@@ -73,6 +92,9 @@ def create_trading_router(
             if success:
                 bot.manual_sell_block[symbol] = time.time()
                 invalidate_status_cache()
+                if live_data_cache:
+                    live_data_cache.invalidate_pending()
+                    live_data_cache.invalidate_portfolio()
                 est_amount: float = sell_qty * sell_price
                 krw_est: float = est_amount * bot.exchange_rate
                 label: str = f"{percent}%"
@@ -109,12 +131,16 @@ def create_trading_router(
             return {"success": False, "message": f"매도 처리 오류: {str(error)}"}
 
     @router.get("/api/pending-orders")
-    async def get_pending_orders(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def get_pending_orders(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"orders": []}
         try:
-            orders = bot.api.get_pending_orders(symbols=bot.symbols)
+            orders = live_data_cache.get_pending(ttl_sec=3.0) if live_data_cache else None
+            if orders is None:
+                orders = bot.api.get_pending_orders(symbols=bot.symbols)
+                if live_data_cache:
+                    live_data_cache.set_pending(orders)
             return {"orders": orders}
         except Exception as error:
             return {"orders": [], "error": str(error)}
@@ -146,6 +172,9 @@ def create_trading_router(
             if success:
                 cancelled_sync: bool = bot.mark_trade_cancelled(symbol, remaining_qty, order_no=order_no)
                 bot.log(f"🚫 [주문취소] {symbol} 주문번호 {order_no}")
+                if live_data_cache:
+                    live_data_cache.invalidate_pending()
+                    live_data_cache.invalidate_portfolio()
                 if cancelled_sync:
                     bot.log(f"🧾 [매매내역 정정] {symbol} 최근 매수 기록에 취소 반영", send_tg=False)
                 return {"success": True, "message": f"{symbol} 주문 취소 완료"}

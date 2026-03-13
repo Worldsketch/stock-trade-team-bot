@@ -525,7 +525,9 @@
         let lwChart = null;
         let candleSeries = null;
         let volumeSeries = null;
-        let currentChartSymbol = '';
+        const DEFAULT_INITIAL_CHART_SYMBOL = 'NVDL';
+        let currentChartSymbol = (localStorage.getItem('last_chart_symbol') || DEFAULT_INITIAL_CHART_SYMBOL).trim().toUpperCase();
+        if (!currentChartSymbol) currentChartSymbol = DEFAULT_INITIAL_CHART_SYMBOL;
         let currentChartPeriod = '1d';
         let currentChartInterval = '5m';
         const CHART_SESSION = 'all';
@@ -559,6 +561,11 @@
         const INITIAL_PENDING_DELAY_MS = 1200;
         const INITIAL_CHART_DELAY_MS = 350;
         const INITIAL_QUOTE_DELAY_MS = 700;
+
+        function persistChartSymbol(symbol) {
+            if (!symbol) return;
+            try { localStorage.setItem('last_chart_symbol', symbol); } catch (_) {}
+        }
 
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/static/sw.js').catch(() => {});
@@ -632,7 +639,12 @@
                 grid: { vertLines: { color: '#334155' }, horzLines: { color: '#334155' } },
                 crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                 rightPriceScale: { borderColor: '#475569' },
-                timeScale: { borderColor: '#475569', timeVisible: true, secondsVisible: false },
+                timeScale: {
+                    borderColor: '#475569',
+                    timeVisible: true,
+                    secondsVisible: false,
+                    rightOffset: 2,
+                },
                 handleScroll: { horzTouchDrag: !isMobile, vertTouchDrag: false },
                 handleScale: { pinch: !isMobile },
             });
@@ -718,6 +730,13 @@
             const chartKey = getChartDataCacheKey(symbol, period, interval);
             if (!keepRange || _chartLastKey !== chartKey) {
                 lwChart.timeScale().fitContent();
+                if (data.candles.length > 1) {
+                    const edgePadBars = Math.max(2, Math.min(10, Math.round(data.candles.length * 0.03)));
+                    lwChart.timeScale().setVisibleLogicalRange({
+                        from: -edgePadBars,
+                        to: (data.candles.length - 1) + edgePadBars,
+                    });
+                }
             }
             _chartLastKey = chartKey;
 
@@ -774,6 +793,7 @@
         function changeChart(symbol) {
             if (symbol === currentChartSymbol) return;
             currentChartSymbol = symbol;
+            persistChartSymbol(symbol);
             document.querySelectorAll('#chartBtnGroup .chart-btn').forEach(btn => {
                 btn.classList.toggle('active', btn.dataset.symbol === symbol);
             });
@@ -859,6 +879,7 @@
             const hasCurrent = currentChartSymbol && syms.has(currentChartSymbol);
             if (!hasCurrent) {
                 currentChartSymbol = slots[0].symbol;
+                persistChartSymbol(currentChartSymbol);
             }
             syms.forEach(sym => {
                 const isActive = sym === currentChartSymbol ? ' active' : '';
@@ -1014,8 +1035,9 @@
             clearPollTimers();
             runStatusPoll(gen);
             _pendingTimer = setTimeout(() => runPendingPoll(gen), INITIAL_PENDING_DELAY_MS);
-            _chartTimer = setTimeout(() => runChartPoll(gen), INITIAL_CHART_DELAY_MS);
-            _quoteTimer = setTimeout(() => runQuotePoll(gen), INITIAL_QUOTE_DELAY_MS);
+            const hasSeedSymbol = !!currentChartSymbol;
+            _chartTimer = setTimeout(() => runChartPoll(gen), hasSeedSymbol ? 0 : INITIAL_CHART_DELAY_MS);
+            _quoteTimer = setTimeout(() => runQuotePoll(gen), hasSeedSymbol ? 250 : INITIAL_QUOTE_DELAY_MS);
         }
 
         async function fetchStatus() {

@@ -22,6 +22,7 @@ from routes.chart import create_chart_router
 from routes.trading import create_trading_router
 from routes.slots_strategy import create_slots_strategy_router
 from routes.status import create_status_router
+from services.live_data_cache import LiveDataCache
 from services.trade_metrics import RealizedPnlCalculator, migrate_trade_pnl
 
 bot_instance: Optional[TradingBot] = None
@@ -29,6 +30,7 @@ bot_thread: Optional[threading.Thread] = None
 _status_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
 _strategy_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
 _realized_pnl: RealizedPnlCalculator = RealizedPnlCalculator(cache_ttl_seconds=180.0, trade_file="trade_log.json")
+_live_data_cache: LiveDataCache = LiveDataCache()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -91,7 +93,10 @@ def _monitor_sell_fill(symbol: str, qty: int, price: float, label: str) -> None:
         if not bot_instance:
             return
         try:
-            orders = bot_instance.api.get_pending_orders(symbols=bot_instance.symbols)
+            orders = _live_data_cache.get_pending(ttl_sec=2.0)
+            if orders is None:
+                orders = bot_instance.api.get_pending_orders(symbols=bot_instance.symbols)
+                _live_data_cache.set_pending(orders)
             still_pending: bool = any(
                 o.get("symbol") == symbol and int(o.get("remaining_qty", 0)) > 0
                 for o in orders
@@ -115,6 +120,7 @@ def _get_bot_instance() -> Optional[TradingBot]:
 def _invalidate_status_cache() -> None:
     _status_cache["data"] = None
     _status_cache["ts"] = 0.0
+    _live_data_cache.invalidate_portfolio()
 
 app.include_router(
     create_status_router(
@@ -122,6 +128,7 @@ app.include_router(
         get_bot=_get_bot_instance,
         status_cache=_status_cache,
         realized_pnl=_realized_pnl,
+        live_data_cache=_live_data_cache,
     )
 )
 app.include_router(
@@ -130,6 +137,7 @@ app.include_router(
         get_bot=_get_bot_instance,
         invalidate_status_cache=_invalidate_status_cache,
         monitor_sell_fill=_monitor_sell_fill,
+        live_data_cache=_live_data_cache,
     )
 )
 app.include_router(
@@ -143,6 +151,7 @@ app.include_router(
     create_chart_router(
         auth_dependency=get_current_username,
         get_bot=_get_bot_instance,
+        live_data_cache=_live_data_cache,
     )
 )
 app.include_router(

@@ -8,11 +8,13 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends
 
 from bot import TradingBot
+from services.live_data_cache import LiveDataCache
 
 
 def create_chart_router(
     auth_dependency: Callable[..., str],
     get_bot: Callable[[], Optional[TradingBot]],
+    live_data_cache: Optional[LiveDataCache] = None,
 ) -> APIRouter:
     router = APIRouter()
     chart_cache: Dict[str, Any] = {}
@@ -101,7 +103,7 @@ def create_chart_router(
         return normalized
 
     @router.get("/api/chart-data")
-    async def get_chart_data(
+    def get_chart_data(
         symbol: str = "",
         period: str = "5d",
         interval: str = "5m",
@@ -209,7 +211,7 @@ def create_chart_router(
             return {"candles": [], "symbol": symbol, "error": str(error)}
 
     @router.get("/api/chart-quote")
-    async def get_chart_quote(
+    def get_chart_quote(
         symbol: str = "",
         username: str = Depends(auth_dependency),
     ) -> Dict[str, Any]:
@@ -228,17 +230,23 @@ def create_chart_router(
             return cached["data"]
 
         price = 0.0
+        source = "kis_quote"
         if bot:
+            if live_data_cache:
+                price = live_data_cache.get_price_from_portfolio(symbol, ttl_sec=3.0)
+                if price > 0:
+                    source = "shared_portfolio"
             try:
-                price = float(bot.api.get_current_price(symbol, prefer_daytime=(session == "daytime")))
+                if price <= 0:
+                    price = float(bot.api.get_current_price(symbol, prefer_daytime=(session == "daytime")))
             except Exception:
                 price = 0.0
-        result = {"symbol": symbol, "price": price, "session": session, "source": "kis_quote", "ts": int(now)}
+        result = {"symbol": symbol, "price": price, "session": session, "source": source, "ts": int(now)}
         quote_cache[cache_key] = {"data": result, "ts": now}
         return result
 
     @router.get("/api/equity-history")
-    async def get_equity_history(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def get_equity_history(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         try:
             equity_file: str = "equity_log.json"
             if os.path.exists(equity_file):
@@ -250,7 +258,7 @@ def create_chart_router(
             return {"history": [], "error": str(error)}
 
     @router.get("/api/trade-history")
-    async def get_trade_history(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def get_trade_history(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         try:
             trade_file: str = "trade_log.json"
             if os.path.exists(trade_file):

@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, Optional
 from fastapi import APIRouter, Depends
 
 from bot import TradingBot
+from services.live_data_cache import LiveDataCache
 from services.trade_metrics import RealizedPnlCalculator
 
 
@@ -12,6 +13,7 @@ def create_status_router(
     get_bot: Callable[[], Optional[TradingBot]],
     status_cache: Dict[str, Any],
     realized_pnl: RealizedPnlCalculator,
+    live_data_cache: Optional[LiveDataCache] = None,
 ) -> APIRouter:
     router = APIRouter()
     slot_price_cache: Dict[str, Dict[str, float]] = {}
@@ -34,7 +36,7 @@ def create_status_router(
             slot_price_cache.pop(oldest_symbol, None)
 
     @router.get("/api/status")
-    async def get_status(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def get_status(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"error": "Bot is not initialized."}
@@ -46,7 +48,13 @@ def create_status_router(
         try:
             started_at: float = time.perf_counter()
             item_code: str = bot.symbols[0] if bot.symbols else "AAPL"
-            data: Dict[str, Any] = bot.api.get_balance_and_positions(item_cd=item_code, symbols=bot.symbols)
+            data: Optional[Dict[str, Any]] = None
+            if live_data_cache:
+                data = live_data_cache.get_portfolio(ttl_sec=3.0)
+            if not data:
+                data = bot.api.get_balance_and_positions(item_cd=item_code, symbols=bot.symbols)
+                if live_data_cache:
+                    live_data_cache.set_portfolio(data)
             balance_done_at: float = time.perf_counter()
             now_kst = bot.get_korean_time()
             now_et = bot.get_eastern_time()
