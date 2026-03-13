@@ -358,6 +358,7 @@ class KoreaInvestmentAPI:
     @retry_api(max_retries=3)
     def get_pending_orders(self, symbols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         orders: List[Dict[str, Any]] = []
+        seen_order_keys: set = set()
         tr_id: str = "VTTS3018R" if self.is_mock else "TTTS3018R"
         required_excgs: List[str] = self._get_required_exchanges(symbols)
         for excg in required_excgs:
@@ -386,10 +387,17 @@ class KoreaInvestmentAPI:
                     nccs_qty: int = int(float(item.get('nccs_qty', 0)))
                     if nccs_qty <= 0:
                         continue
+                    order_no: str = item.get('odno', '')
+                    symbol: str = item.get('pdno', '')
+                    side: str = "매수" if item.get('sll_buy_dvsn_cd') == '02' else "매도"
+                    dedupe_key = (order_no, symbol, side)
+                    if dedupe_key in seen_order_keys:
+                        continue
+                    seen_order_keys.add(dedupe_key)
                     orders.append({
-                        "order_no": item.get('odno', ''),
-                        "symbol": item.get('pdno', ''),
-                        "side": "매수" if item.get('sll_buy_dvsn_cd') == '02' else "매도",
+                        "order_no": order_no,
+                        "symbol": symbol,
+                        "side": side,
                         "order_qty": int(float(item.get('ft_ord_qty', 0))),
                         "filled_qty": int(float(item.get('ft_ccld_qty', 0))),
                         "remaining_qty": nccs_qty,
