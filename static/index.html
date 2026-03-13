@@ -1720,13 +1720,7 @@
                     <span class="text-sm text-slate-400">${label}</span>
                     <span class="text-sm font-semibold ${color || 'text-white'}">${value}</span>
                 </div>`;
-            const source = String(p.source || '');
-            const sourceLabel = source === 'snapshot' ? '스냅샷' : (source === 'live_refresh' ? '실시간 갱신' : '캐시/실시간');
-            const sourceColor = source === 'snapshot' ? 'text-amber-300' : (source === 'live_refresh' ? 'text-emerald-300' : 'text-slate-300');
-            const sourceTime = p.server_time ? ` · ${p.server_time}` : '';
-
-            let html = `<div class="mb-4 text-xs ${sourceColor}">데이터 소스: ${sourceLabel}${sourceTime}</div>`;
-            html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-6">';
+            let html = '<div class="grid grid-cols-1 md:grid-cols-2 gap-6">';
 
             html += '<div>';
             html += '<h3 class="text-sm font-semibold text-emerald-400 mb-3 flex items-center gap-2"><i class="fa-solid fa-cart-shopping"></i> 매수 전략</h3>';
