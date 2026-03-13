@@ -1170,9 +1170,10 @@
                     totalPl += p.evlu_pfls || 0;
                 });
             }
-            const totalEquityUsd = usdBal + positionsValue;
-            // 총 자산은 대시보드 카드와 동일 기준(원화 예수금 + 주식 평가금액)으로 계산해 표시 불일치를 줄임
-            const totalEquityKrw = (krwBal > 0 ? krwBal : (usdBal * rate + krwCash)) + (positionsValue * rate);
+            const totalStockUsdForTotal = (data.tot_stck_evlu && data.tot_stck_evlu > 0) ? data.tot_stck_evlu : positionsValue;
+            const totalEquityUsd = usdBal + totalStockUsdForTotal;
+            // 총 자산은 미국자산(USD) 기준 합계에 환율을 곱해 계산 (한투 미국주식 총자산 기준에 최대한 일치)
+            const totalEquityKrw = (totalEquityUsd * rate) + krwCash;
             const totalRetRate = totalInvested > 0 ? (totalPl / totalInvested) * 100 : 0;
 
             const cashRatio = totalEquityUsd > 0 ? (usdBal / totalEquityUsd * 100) : 0;
