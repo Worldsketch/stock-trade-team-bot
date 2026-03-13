@@ -138,38 +138,50 @@ def create_chart_router(
                     interval_min: int = int(interval[:-1])
                     live_session = resolve_live_session(bot)
                     prefer_daytime = session_filter == "daytime" or (session_filter == "all" and live_session == "daytime")
-                    kis_candles = bot.api.get_intraday_candles(
-                        symbol=symbol,
-                        interval_min=interval_min,
-                        nrec=estimate_intraday_nrec(period, interval_min),
-                        prefer_daytime=prefer_daytime,
-                    )
+                    prefer_attempts = [prefer_daytime]
+                    # 분봉이 비는 경우(장외/거래소 응답 차이) 데이장 분봉으로 자동 폴백해 빈 차트를 방지
+                    if session_filter == "all":
+                        prefer_attempts.append(not prefer_daytime)
+
                     normalized: list = []
-                    for candle in kis_candles:
-                        ts_epoch = int(candle.get("time", 0) or 0)
-                        if ts_epoch <= 0:
-                            continue
-                        if prefer_daytime:
-                            candle_session = "daytime"
-                        else:
-                            candle_session = classify_us_session(ts_epoch)
-                            if candle_session == "off":
-                                continue
-                        if session_filter in ("pre", "regular", "after") and candle_session != session_filter:
-                            continue
-                        normalized.append(
-                            {
-                                "time": ts_epoch,
-                                "open": round(float(candle.get("open", 0.0)), 2),
-                                "high": round(float(candle.get("high", 0.0)), 2),
-                                "low": round(float(candle.get("low", 0.0)), 2),
-                                "close": round(float(candle.get("close", 0.0)), 2),
-                                "volume": int(float(candle.get("volume", 0) or 0)),
-                                "session": candle_session,
-                            }
+                    selected_prefer_daytime: bool = prefer_daytime
+                    for attempt_prefer_daytime in list(dict.fromkeys(prefer_attempts)):
+                        kis_candles = bot.api.get_intraday_candles(
+                            symbol=symbol,
+                            interval_min=interval_min,
+                            nrec=estimate_intraday_nrec(period, interval_min),
+                            prefer_daytime=attempt_prefer_daytime,
                         )
+                        normalized = []
+                        for candle in kis_candles:
+                            ts_epoch = int(candle.get("time", 0) or 0)
+                            if ts_epoch <= 0:
+                                continue
+                            if attempt_prefer_daytime:
+                                candle_session = "daytime"
+                            else:
+                                candle_session = classify_us_session(ts_epoch)
+                                if candle_session == "off":
+                                    continue
+                            if session_filter in ("pre", "regular", "after") and candle_session != session_filter:
+                                continue
+                            normalized.append(
+                                {
+                                    "time": ts_epoch,
+                                    "open": round(float(candle.get("open", 0.0)), 2),
+                                    "high": round(float(candle.get("high", 0.0)), 2),
+                                    "low": round(float(candle.get("low", 0.0)), 2),
+                                    "close": round(float(candle.get("close", 0.0)), 2),
+                                    "volume": int(float(candle.get("volume", 0) or 0)),
+                                    "session": candle_session,
+                                }
+                            )
+                        if normalized:
+                            selected_prefer_daytime = attempt_prefer_daytime
+                            break
+
                     candles = normalized
-                    source = "kis_daytime" if prefer_daytime else "kis_intraday"
+                    source = "kis_daytime" if selected_prefer_daytime else "kis_intraday"
                 except Exception:
                     candles = []
                     source = "none"

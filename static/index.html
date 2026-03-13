@@ -557,6 +557,7 @@
         const POLL_SLOW_THRESHOLD_MS = 2500;
         const CHART_CLIENT_CACHE_INTRADAY_MS = 20000;
         const CHART_CLIENT_CACHE_DAILY_MS = 300000;
+        const CHART_LOCAL_SEED_KEY = 'stb_last_chart_seed';
         const INITIAL_PENDING_DELAY_MS = 1200;
         const INITIAL_CHART_DELAY_MS = 350;
         const INITIAL_QUOTE_DELAY_MS = 700;
@@ -688,6 +689,28 @@
                 const oldestKey = _chartDataCache.keys().next().value;
                 if (oldestKey) _chartDataCache.delete(oldestKey);
             }
+            if (data && data.candles && data.candles.length > 0) {
+                try {
+                    localStorage.setItem(CHART_LOCAL_SEED_KEY, JSON.stringify({ key: cacheKey, ts: Date.now(), data }));
+                } catch (_) {}
+            }
+        }
+
+        function getLocalSeedChartData(cacheKey, interval) {
+            try {
+                const raw = localStorage.getItem(CHART_LOCAL_SEED_KEY);
+                if (!raw) return null;
+                const seed = JSON.parse(raw);
+                if (!seed || seed.key !== cacheKey || !seed.data) return null;
+                const age = Date.now() - Number(seed.ts || 0);
+                const maxAge = String(interval || '').endsWith('m') ? 3600000 : 24 * 3600000;
+                if (age > maxAge) return null;
+                const candles = seed.data.candles || [];
+                if (!Array.isArray(candles) || candles.length === 0) return null;
+                return seed.data;
+            } catch (_) {
+                return null;
+            }
         }
 
         function renderChartData(symbol, period, interval, data) {
@@ -762,6 +785,13 @@
                     if (symbol !== currentChartSymbol || period !== currentChartPeriod || interval !== currentChartInterval) return null;
                     if ((cachedData.session || 'all') !== CHART_SESSION) return null;
                     return renderChartData(symbol, period, interval, cachedData);
+                }
+                const localSeed = getLocalSeedChartData(cacheKey, interval);
+                if (localSeed) {
+                    if (symbol !== currentChartSymbol || period !== currentChartPeriod || interval !== currentChartInterval) return null;
+                    if ((localSeed.session || 'all') === CHART_SESSION) {
+                        renderChartData(symbol, period, interval, localSeed);
+                    }
                 }
             }
 
