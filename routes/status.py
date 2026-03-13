@@ -4,7 +4,6 @@ from typing import Any, Callable, Dict, Optional
 from fastapi import APIRouter, Depends
 
 from bot import TradingBot
-from services.price_cache import BasePriceCache
 from services.trade_metrics import RealizedPnlCalculator
 
 
@@ -12,16 +11,9 @@ def create_status_router(
     auth_dependency: Callable[..., str],
     get_bot: Callable[[], Optional[TradingBot]],
     status_cache: Dict[str, Any],
-    base_price_cache: BasePriceCache,
     realized_pnl: RealizedPnlCalculator,
 ) -> APIRouter:
     router = APIRouter()
-
-    def fetch_base_price(base_symbol: str) -> float:
-        bot = get_bot()
-        if not bot:
-            return 0.0
-        return bot.api.get_current_price(base_symbol)
 
     @router.get("/api/status")
     async def get_status(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
@@ -71,11 +63,6 @@ def create_status_router(
                         pass
                 slot_info = next((slot for slot in active_slots if slot["symbol"] == symbol), {})
                 base_symbol: str = slot_info.get("base_asset", symbol)
-                base_price: float = (
-                    base_price_cache.get_price(base_symbol, fetch_base_price)
-                    if base_symbol != symbol
-                    else 0.0
-                )
                 positions_list.append(
                     {
                         "symbol": symbol,
@@ -88,7 +75,8 @@ def create_status_router(
                         "pchs_amt": pos.get("pchs_amt", 0.0),
                         "is_leveraged": slot_info.get("is_leveraged", False),
                         "base_asset": base_symbol,
-                        "base_price": base_price,
+                        # 본주 차트/실시간 표시를 사용하지 않아 상태 조회에서 별도 본주 시세 조회를 생략
+                        "base_price": 0.0,
                     }
                 )
 
@@ -102,11 +90,6 @@ def create_status_router(
                 except Exception:
                     pass
                 base_symbol = slot_info.get("base_asset", symbol)
-                fallback_base_price: float = (
-                    base_price_cache.get_price(base_symbol, fetch_base_price)
-                    if base_symbol != symbol
-                    else 0.0
-                )
                 positions_list.append(
                     {
                         "symbol": symbol,
@@ -116,7 +99,7 @@ def create_status_router(
                         "return_rate": 0.0,
                         "is_leveraged": slot_info.get("is_leveraged", False),
                         "base_asset": base_symbol,
-                        "base_price": fallback_base_price,
+                        "base_price": 0.0,
                     }
                 )
 

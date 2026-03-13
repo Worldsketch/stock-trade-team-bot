@@ -22,14 +22,12 @@ from routes.chart import create_chart_router
 from routes.trading import create_trading_router
 from routes.slots_strategy import create_slots_strategy_router
 from routes.status import create_status_router
-from services.price_cache import BasePriceCache
 from services.trade_metrics import RealizedPnlCalculator, migrate_trade_pnl
 
 bot_instance: Optional[TradingBot] = None
 bot_thread: Optional[threading.Thread] = None
 _status_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
 _strategy_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
-_base_price_cache: BasePriceCache = BasePriceCache(ttl_seconds=10.0)
 _realized_pnl: RealizedPnlCalculator = RealizedPnlCalculator(cache_ttl_seconds=60.0, trade_file="trade_log.json")
 
 @asynccontextmanager
@@ -123,7 +121,6 @@ app.include_router(
         auth_dependency=get_current_username,
         get_bot=_get_bot_instance,
         status_cache=_status_cache,
-        base_price_cache=_base_price_cache,
         realized_pnl=_realized_pnl,
     )
 )

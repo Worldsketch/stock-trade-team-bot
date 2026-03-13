@@ -41,10 +41,11 @@
         .toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; border-radius: 50%; transition: .3s; }
         input:checked + .toggle-slider { background-color: #10b981; }
         input:checked + .toggle-slider:before { transform: translateX(20px); }
-        .chart-btn, .chart-period-btn { color: #94a3b8; }
-        .chart-btn:hover, .chart-period-btn:hover { color: #fff; }
+        .chart-btn, .chart-period-btn, .chart-session-btn { color: #94a3b8; }
+        .chart-btn:hover, .chart-period-btn:hover, .chart-session-btn:hover { color: #fff; }
         .chart-btn.active { background-color: rgba(16,185,129,0.25); color: #6ee7b7; }
         .chart-period-btn.active { background-color: rgba(59,130,246,0.25); color: #93c5fd; }
+        .chart-session-btn.active { background-color: rgba(14,165,233,0.22); color: #7dd3fc; }
         .stat-card { position: relative; overflow: hidden; }
         .stat-card .stat-bg-icon { position: absolute; right: -8px; bottom: -12px; font-size: 72px; opacity: 0.04; pointer-events: none; }
         .tab-btn { transition: all 0.2s; }
@@ -182,12 +183,17 @@
                         <span id="chartLiveIndicator" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block"></span>
                     </h2>
                     <div class="flex gap-2 flex-wrap justify-end">
+                        <div id="chartSessionGroup" class="flex bg-slate-900/60 rounded-lg p-0.5 gap-0.5">
+                            <button onclick="setChartSession('all')" data-session="all" class="chart-session-btn active px-2 py-1 text-[11px] font-medium rounded-md transition-all">전체</button>
+                            <button onclick="setChartSession('daytime')" data-session="daytime" class="chart-session-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">데이장</button>
+                            <button onclick="setChartSession('pre')" data-session="pre" class="chart-session-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">프리장</button>
+                            <button onclick="setChartSession('regular')" data-session="regular" class="chart-session-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">본장</button>
+                            <button onclick="setChartSession('after')" data-session="after" class="chart-session-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">애프터</button>
+                        </div>
                         <div id="chartPeriodGroup" class="flex bg-slate-900/60 rounded-lg p-0.5 gap-0.5">
-                            <button onclick="setChartPeriod('1d','5m')" data-period="1d" class="chart-period-btn active px-2 py-1 text-[11px] font-medium rounded-md transition-all">1일</button>
-                            <button onclick="setChartPeriod('5d','15m')" data-period="5d" class="chart-period-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">5일</button>
-                            <button onclick="setChartPeriod('1mo','1d')" data-period="1mo" class="chart-period-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">1개월</button>
-                            <button onclick="setChartPeriod('6mo','1d')" data-period="6mo" class="chart-period-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">6개월</button>
-                            <button onclick="setChartPeriod('1y','1d')" data-period="1y" class="chart-period-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">1년</button>
+                            <button onclick="setChartPeriod('1d','5m')" data-period="1d" class="chart-period-btn active px-2 py-1 text-[11px] font-medium rounded-md transition-all">분</button>
+                            <button onclick="setChartPeriod('1mo','1d')" data-period="1mo" class="chart-period-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">일</button>
+                            <button onclick="setChartPeriod('1y','1d')" data-period="1y" class="chart-period-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">연</button>
                         </div>
                         <div id="chartBtnGroup" class="flex bg-slate-900/60 rounded-lg p-0.5 gap-0.5 flex-wrap">
                         </div>
@@ -530,6 +536,7 @@
         let currentChartSymbol = '';
         let currentChartPeriod = '1d';
         let currentChartInterval = '5m';
+        let currentChartSession = 'all';
         let showKrw = true;
         let lastData = null;
         let allTrades = [];
@@ -538,6 +545,15 @@
         let currentSlots = [];
         let maxSlots = 6;
         let _removeTarget = '';
+        let _statusFetchInFlight = false;
+        let _chartFetchController = null;
+        let _chartLastKey = '';
+        let _chartQuoteController = null;
+        let _statusTimer = null;
+        let _pendingTimer = null;
+        let _chartTimer = null;
+        let _quoteTimer = null;
+        let _pollGeneration = 0;
 
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/static/sw.js').catch(() => {});
@@ -623,16 +639,38 @@
             lwChart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
         }
 
-        async function loadChartData(symbol, period, interval) {
+        async function loadChartData(symbol, period, interval, options = {}) {
+            const keepRange = options.keepRange === true;
             const auth = getAuthHeader();
             if (!auth) return;
+            if (_chartFetchController) _chartFetchController.abort();
+            _chartFetchController = new AbortController();
             try {
-                const res = await fetch(`/api/chart-data?symbol=${symbol}&period=${period}&interval=${interval}`, { headers: { 'Authorization': auth } });
+                const query = new URLSearchParams({
+                    symbol,
+                    period,
+                    interval,
+                    session: currentChartSession,
+                });
+                const res = await fetch(`/api/chart-data?${query.toString()}`, {
+                    headers: { 'Authorization': auth },
+                    signal: _chartFetchController.signal,
+                });
                 const data = await res.json();
-                if (!data.candles || data.candles.length === 0) return;
+                if (symbol !== currentChartSymbol || period !== currentChartPeriod || interval !== currentChartInterval) return;
+                if ((data.session || 'all') !== currentChartSession) return;
+                if (!data.candles || data.candles.length === 0) {
+                    candleSeries.setData([]);
+                    volumeSeries.setData([]);
+                    candleSeries.setMarkers([]);
+                    _lastCandle = null;
+                    _lastCandleSession = 'all';
+                    return;
+                }
 
                 candleSeries.setData(data.candles);
                 _lastCandle = data.candles.length > 0 ? { ...data.candles[data.candles.length - 1] } : null;
+                _lastCandleSession = data.candles.length > 0 ? (data.candles[data.candles.length - 1].session || 'all') : 'all';
                 volumeSeries.setData(data.candles.map(c => ({
                     time: c.time, value: c.volume, color: c.close >= c.open ? 'rgba(16,185,129,0.25)' : 'rgba(244,63,94,0.25)'
                 })));
@@ -656,11 +694,24 @@
                         }
                     });
                     markers.sort((a, b) => a.time - b.time);
-                    if (markers.length > 0) candleSeries.setMarkers(markers);
                 }
+                candleSeries.setMarkers(markers);
 
-                lwChart.timeScale().fitContent();
-            } catch(e) { console.error('Chart data error:', e); }
+                const chartKey = `${symbol}_${period}_${interval}_${currentChartSession}`;
+                if (!keepRange || _chartLastKey !== chartKey) {
+                    lwChart.timeScale().fitContent();
+                }
+                _chartLastKey = chartKey;
+
+                const liveIndicator = document.getElementById('chartLiveIndicator');
+                if (liveIndicator && data.source) {
+                    liveIndicator.title = `차트 소스: ${data.source}`;
+                }
+            } catch(e) {
+                if (e.name !== 'AbortError') {
+                    console.error('Chart data error:', e);
+                }
+            }
         }
 
         function changeChart(symbol) {
@@ -668,7 +719,7 @@
             document.querySelectorAll('#chartBtnGroup .chart-btn').forEach(btn => {
                 btn.classList.toggle('active', btn.dataset.symbol === symbol);
             });
-            loadChartData(symbol, currentChartPeriod, currentChartInterval);
+            loadChartData(symbol, currentChartPeriod, currentChartInterval, { keepRange: false });
         }
 
         function setChartPeriod(period, interval) {
@@ -681,21 +732,29 @@
                     btn.classList.remove('active');
                 }
             });
-            loadChartData(currentChartSymbol, period, interval);
+            loadChartData(currentChartSymbol, period, interval, { keepRange: false });
+        }
+
+        function setChartSession(session) {
+            currentChartSession = session;
+            document.querySelectorAll('#chartSessionGroup .chart-session-btn').forEach(btn => {
+                if (btn.dataset.session === session) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+            if (currentChartSymbol) {
+                loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval, { keepRange: false });
+            }
         }
 
         let _lastCandle = null;
+        let _lastCandleSession = 'all';
 
-        function updateChartRealtime(positions) {
-            if (!candleSeries || !positions || !_lastCandle) return;
-            const sym = currentChartSymbol;
-            let pos = positions.find(p => p.symbol === sym);
-            if (!pos) pos = positions.find(p => p.base_asset === sym);
-            if (!pos || pos.current_price <= 0) return;
-            let price = pos.current_price;
-            if (pos.symbol !== sym && pos.base_asset === sym && pos.base_price > 0) {
-                price = pos.base_price;
-            }
+        function applyRealtimePrice(price, sessionTag = 'all') {
+            if (!candleSeries || !_lastCandle || !price || price <= 0) return;
+            if (currentChartSession !== 'all' && currentChartSession !== sessionTag) return;
             const updated = {
                 time: _lastCandle.time,
                 open: _lastCandle.open,
@@ -704,7 +763,43 @@
                 close: price,
             };
             _lastCandle = updated;
+            _lastCandleSession = sessionTag;
             candleSeries.update(updated);
+        }
+
+        function updateChartRealtime(positions) {
+            if (!candleSeries || !positions || !_lastCandle) return;
+            const sym = currentChartSymbol;
+            let pos = positions.find(p => p.symbol === sym);
+            if (!pos || pos.current_price <= 0) return;
+            applyRealtimePrice(pos.current_price, _lastCandleSession || 'all');
+        }
+
+        async function fetchChartQuote() {
+            if (!currentChartSymbol || !_lastCandle) return;
+            const currentSession = getCurrentSessionKey();
+            if (currentChartSession !== 'all' && currentChartSession !== currentSession) return;
+            const auth = getAuthHeader();
+            if (!auth) return;
+            if (_chartQuoteController) _chartQuoteController.abort();
+            _chartQuoteController = new AbortController();
+            try {
+                const query = new URLSearchParams({ symbol: currentChartSymbol });
+                const res = await fetch(`/api/chart-quote?${query.toString()}`, {
+                    headers: { 'Authorization': auth },
+                    signal: _chartQuoteController.signal,
+                });
+                const data = await res.json();
+                if (currentChartSymbol !== data.symbol) return;
+                const price = Number(data.price || 0);
+                if (price <= 0) return;
+                const quoteSession = data.session || 'all';
+                applyRealtimePrice(price, quoteSession);
+            } catch (e) {
+                if (e.name !== 'AbortError') {
+                    console.error('Chart quote error:', e);
+                }
+            }
         }
 
         function buildChartButtons(slots) {
@@ -715,19 +810,15 @@
             }
             let html = '';
             const syms = new Set();
-            const bases = new Set();
-            slots.forEach(s => { syms.add(s.symbol); if (s.base_asset && s.base_asset !== s.symbol) bases.add(s.base_asset); });
+            slots.forEach(s => syms.add(s.symbol));
+            const hasCurrent = currentChartSymbol && syms.has(currentChartSymbol);
+            if (!hasCurrent) {
+                currentChartSymbol = slots[0].symbol;
+            }
             syms.forEach(sym => {
                 const isActive = sym === currentChartSymbol ? ' active' : '';
                 html += `<button onclick="changeChart('${sym}')" data-symbol="${sym}" class="chart-btn${isActive} px-2.5 py-1 text-[11px] font-medium rounded-md transition-all">${sym}</button>`;
             });
-            if (bases.size > 0) {
-                html += '<span class="w-px h-3.5 bg-slate-600 self-center mx-0.5"></span>';
-                bases.forEach(base => {
-                    const isActive = base === currentChartSymbol ? ' active' : '';
-                    html += `<button onclick="changeChart('${base}')" data-symbol="${base}" class="chart-btn${isActive} px-2.5 py-1 text-[11px] font-medium rounded-md transition-all">${base}</button>`;
-                });
-            }
             group.innerHTML = html;
         }
 
@@ -782,9 +873,76 @@
             modal.classList.remove('hidden');
         }
 
+        function isLiveTradingWindow() {
+            return (lastData?.market_open === true) || (lastData?.daytime_open === true);
+        }
+
+        function getPollMs(kind) {
+            const hidden = document.visibilityState === 'hidden';
+            const live = isLiveTradingWindow();
+            if (kind === 'status') return hidden ? 30000 : (live ? 6000 : 15000);
+            if (kind === 'pending') return hidden ? 40000 : (live ? 12000 : 30000);
+            if (kind === 'chart') return hidden ? 180000 : (live ? 60000 : 120000);
+            if (kind === 'quote') return hidden ? 20000 : (live ? 2500 : 10000);
+            return 10000;
+        }
+
+        function clearPollTimers() {
+            if (_statusTimer) clearTimeout(_statusTimer);
+            if (_pendingTimer) clearTimeout(_pendingTimer);
+            if (_chartTimer) clearTimeout(_chartTimer);
+            if (_quoteTimer) clearTimeout(_quoteTimer);
+            _statusTimer = null;
+            _pendingTimer = null;
+            _chartTimer = null;
+            _quoteTimer = null;
+        }
+
+        async function runStatusPoll(gen) {
+            if (gen !== _pollGeneration) return;
+            await fetchStatus();
+            if (gen !== _pollGeneration) return;
+            _statusTimer = setTimeout(() => runStatusPoll(gen), getPollMs('status'));
+        }
+
+        async function runPendingPoll(gen) {
+            if (gen !== _pollGeneration) return;
+            await fetchPendingOrders();
+            if (gen !== _pollGeneration) return;
+            _pendingTimer = setTimeout(() => runPendingPoll(gen), getPollMs('pending'));
+        }
+
+        async function runChartPoll(gen) {
+            if (gen !== _pollGeneration) return;
+            if (currentChartSymbol) {
+                await loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval, { keepRange: true });
+            }
+            if (gen !== _pollGeneration) return;
+            _chartTimer = setTimeout(() => runChartPoll(gen), getPollMs('chart'));
+        }
+
+        async function runQuotePoll(gen) {
+            if (gen !== _pollGeneration) return;
+            await fetchChartQuote();
+            if (gen !== _pollGeneration) return;
+            _quoteTimer = setTimeout(() => runQuotePoll(gen), getPollMs('quote'));
+        }
+
+        function startAdaptivePolling() {
+            _pollGeneration += 1;
+            const gen = _pollGeneration;
+            clearPollTimers();
+            runStatusPoll(gen);
+            runPendingPoll(gen);
+            runChartPoll(gen);
+            runQuotePoll(gen);
+        }
+
         async function fetchStatus() {
+            if (_statusFetchInFlight) return;
             const auth = getAuthHeader();
             if (!auth) { showLogin(); return; }
+            _statusFetchInFlight = true;
             try {
                 const res = await fetch('/api/status', { headers: { 'Authorization': auth } });
                 if (res.status === 401) { localStorage.removeItem('bot_auth_token'); showLogin(); return; }
@@ -792,7 +950,11 @@
                 if (data.error) return;
                 lastData = data;
                 updateUI(data);
-            } catch (err) { console.error("Fetch error:", err); }
+            } catch (err) {
+                console.error("Fetch error:", err);
+            } finally {
+                _statusFetchInFlight = false;
+            }
         }
 
         const SLOT_COLORS = [
@@ -837,6 +999,26 @@
             };
         }
 
+        function getCurrentSessionKey() {
+            const now = new Date();
+            const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+            const kDay = kst.getDay();
+            const kMin = kst.getHours() * 60 + kst.getMinutes();
+            if (kDay >= 1 && kDay <= 5 && kMin >= 540 && kMin < 960) {
+                return 'daytime';
+            }
+
+            const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+            const eDay = et.getDay();
+            const eMin = et.getHours() * 60 + et.getMinutes();
+            if (eDay >= 1 && eDay <= 5) {
+                if (eMin >= 240 && eMin < 570) return 'pre';
+                if (eMin >= 570 && eMin < 960) return 'regular';
+                if (eMin >= 960 && eMin < 1200) return 'after';
+            }
+            return 'off';
+        }
+
         function updateUI(data) {
             if (data.slots) {
                 const prevLen = currentSlots.length;
@@ -857,7 +1039,7 @@
                 updateTradeSymbolFilter(currentSlots);
                 if (!currentChartSymbol && currentSlots.length > 0) {
                     currentChartSymbol = currentSlots[0].symbol;
-                    loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval);
+                    loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval, { keepRange: false });
                 }
             }
             const rate = data.exchange_rate || 1400;
@@ -1949,11 +2131,11 @@
             }
         }
 
-        fetchStatus();
         fetchAiReport();
-        setInterval(fetchStatus, 3000);
-        setInterval(fetchPendingOrders, 10000);
-        setInterval(() => { if (currentChartSymbol) loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval); }, 60000);
+        startAdaptivePolling();
+        document.addEventListener('visibilitychange', () => {
+            startAdaptivePolling();
+        });
     </script>
 
     <footer class="text-center py-8 space-y-1">
