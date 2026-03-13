@@ -204,21 +204,31 @@ class KoreaInvestmentAPI:
             try:
                 bal_url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
                 bal_headers: Dict[str, str] = self.get_headers("TTTS3007R")
-                bal_params: Dict[str, str] = {
-                    "CANO": self.account_no,
-                    "ACNT_PRDT_CD": self.account_code,
-                    "OVRS_EXCG_CD": "NASD",
-                    "OVRS_ORD_UNPR": "1",
-                    "ITEM_CD": item_cd
-                }
-                bal_res = requests.get(bal_url, headers=bal_headers, params=bal_params, timeout=(2.0, 4.0))
-                bal_res.raise_for_status()
-                bal_data = bal_res.json()
-                if bal_data.get('rt_cd') == '0' and isinstance(bal_data.get('output'), dict):
-                    usd_balance = float(bal_data['output'].get('ovrs_ord_psbl_amt', 0.0))
-                    exrt: float = float(bal_data['output'].get('exrt', 0.0))
-                    if exrt > 0:
-                        result["exchange_rate"] = exrt
+                balance_excgs: List[str] = self._get_required_exchanges(symbols if symbols else [item_cd])
+                # 거래소 코드가 종목과 불일치하면 예수금이 0으로 떨어질 수 있어 다중 거래소 재시도
+                for excg in balance_excgs:
+                    try:
+                        bal_params: Dict[str, str] = {
+                            "CANO": self.account_no,
+                            "ACNT_PRDT_CD": self.account_code,
+                            "OVRS_EXCG_CD": excg,
+                            "OVRS_ORD_UNPR": "1",
+                            "ITEM_CD": item_cd
+                        }
+                        bal_res = requests.get(bal_url, headers=bal_headers, params=bal_params, timeout=(2.0, 4.0))
+                        bal_res.raise_for_status()
+                        bal_data = bal_res.json()
+                        if bal_data.get('rt_cd') != '0' or not isinstance(bal_data.get('output'), dict):
+                            continue
+                        cand_balance = float(bal_data['output'].get('ovrs_ord_psbl_amt', 0.0))
+                        if cand_balance > usd_balance:
+                            usd_balance = cand_balance
+                        exrt: float = float(bal_data['output'].get('exrt', 0.0))
+                        if exrt > 0 and result.get("exchange_rate", 0.0) <= 0:
+                            result["exchange_rate"] = exrt
+                    except Exception as sub_e:
+                        print(f"[실전 예수금 조회 에러 ({excg})] {type(sub_e).__name__}: {sub_e}")
+                        continue
             except Exception as e:
                 print(f"[실전 예수금 조회 에러] {type(e).__name__}: {e}")
 
