@@ -670,22 +670,33 @@ class TradingBot:
         try:
             ticker = yf.Ticker("KRW=X")
             try:
-                fast_info = getattr(ticker, "fast_info", None)
-                if fast_info:
-                    market_rate = float(
-                        fast_info.get("lastPrice")
-                        or fast_info.get("last_price")
-                        or fast_info.get("regularMarketPrice")
-                        or fast_info.get("regular_market_price")
-                        or 0.0
-                    )
+                # 앱 환산값에 더 근접하도록 bid(호가) 우선 사용
+                info = ticker.info or {}
+                bid = float(info.get("bid", 0.0) or 0.0)
+                ask = float(info.get("ask", 0.0) or 0.0)
+                regular_market = float(info.get("regularMarketPrice", 0.0) or 0.0)
+                prev_close = float(info.get("previousClose", 0.0) or 0.0)
+
+                if bid > 0:
+                    market_rate = bid
+                elif ask > 0:
+                    market_rate = ask
+                elif regular_market > 0:
+                    market_rate = regular_market
+                elif prev_close > 0:
+                    market_rate = prev_close
             except Exception:
                 market_rate = 0.0
 
             if market_rate <= 0:
-                intraday = ticker.history(period="1d", interval="1m")
-                if not intraday.empty:
-                    market_rate = float(intraday["Close"].dropna().iloc[-1])
+                fast_info = getattr(ticker, "fast_info", None)
+                if fast_info:
+                    market_rate = float(
+                        fast_info.get("previousClose")
+                        or fast_info.get("lastPrice")
+                        or fast_info.get("last_price")
+                        or 0.0
+                    )
 
             if market_rate <= 0:
                 daily = ticker.history(period="5d")
