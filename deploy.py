@@ -18,6 +18,7 @@ if not HOST or not DEPLOY_PATH:
 
 DEPLOY_FILES: list[str] = ["bot.py", "app.py", "api.py", "requirements.txt"]
 DEPLOY_STATIC: list[str] = ["static/index.html", "static/manifest.json", "static/sw.js"]
+DEPLOY_DIRS: list[str] = ["routes", "services"]
 TARGET: str = f"{USER}@{HOST}"
 
 
@@ -38,6 +39,10 @@ def deploy() -> None:
             remote_dir: str = f"{DEPLOY_PATH}/{str(Path(f).parent)}"
             run(f"ssh -o ConnectTimeout=10 {TARGET} 'mkdir -p {remote_dir}'")
             run(f"scp -o ConnectTimeout=10 {f} {TARGET}:{DEPLOY_PATH}/{f}")
+    for d in DEPLOY_DIRS:
+        if Path(d).exists():
+            run(f"ssh -o ConnectTimeout=10 {TARGET} 'mkdir -p {DEPLOY_PATH}/{d}'")
+            run(f"scp -o ConnectTimeout=10 -r {d} {TARGET}:{DEPLOY_PATH}/")
 
     print("\n🔄 PM2 재시작 중...")
     result = run(f"ssh -o ConnectTimeout=10 {TARGET} 'cd {DEPLOY_PATH} && pm2 restart trade-bot'")
