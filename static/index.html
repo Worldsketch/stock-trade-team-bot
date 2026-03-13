@@ -2058,7 +2058,7 @@
             html += mkRow(`${(p.dca_4_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w4_ratio*100).toFixed(1)}%`);
             html += mkRow(`${(p.dca_8_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w8_ratio*100).toFixed(1)}%`);
             html += mkRow('RSI 과매도 보너스', `총 자산의 ${(p.w4_ratio*100).toFixed(1)}% (RSI<30)`);
-            html += mkRow('매수 지정가', '현재가 +0.5%');
+            html += mkRow('매수 주문 방식', '추격형 지정가 (시작 +0.2%, 최대 +0.8%)');
             html += '</div></div>';
 
             html += '<div>';

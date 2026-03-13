@@ -27,6 +27,15 @@ LEVERAGED_ETF_MAP: Dict[str, str] = {
     'WEBL': 'DJUSTC', 'BITX': 'BTC',
 }
 
+SMART_BUY_INITIAL_PREMIUM: float = 0.002  # +0.2%
+SMART_BUY_REPRICE_STEPS: List[Tuple[int, float]] = [
+    (3, 0.002),    # 3초: 현재가 기준 +0.2%
+    (15, 0.0035),  # 15초: 현재가 기준 +0.35%
+    (30, 0.005),   # 30초: 현재가 기준 +0.5%
+    (45, 0.008),   # 45초: 현재가 기준 +0.8%
+]
+SMART_BUY_MONITOR_SEC: int = 300
+
 
 class SlotManager:
     """최대 6개 슬롯의 동적 종목 관리를 담당합니다."""
@@ -552,11 +561,20 @@ class TradingBot:
             except Exception as e:
                 return {"success": False, "message": f"매수 수량 계산 실패: {e}"}
 
-        buy_price: float = round(current_price * 1.005, 2)
+        buy_price: float = round(current_price * (1.0 + SMART_BUY_INITIAL_PREMIUM), 2)
         prefer_daytime: bool = is_daytime_session and (not is_us_session)
         success: bool = self.api.place_order(symbol, buy_qty, buy_price, is_buy=True, prefer_daytime=prefer_daytime)
         if not success:
             return {"success": False, "message": f"{symbol} {buy_qty}주 매수 주문 실패"}
+
+        pct_label: str = f" ({buy_percent}%)" if buy_percent > 0 else ""
+        self._start_smart_buy_manager(
+            symbol=symbol,
+            total_qty=buy_qty,
+            initial_price=buy_price,
+            reason=f"[슬롯 추가] 초기 매수{pct_label}",
+            prefer_daytime=prefer_daytime,
+        )
 
         self.slot_manager.add_slot(symbol, base_asset, is_leveraged)
         self.is_uptrend[symbol] = False
@@ -572,7 +590,6 @@ class TradingBot:
             pass
 
         est_amount: float = buy_qty * buy_price
-        pct_label: str = f" ({buy_percent}%)" if buy_percent > 0 else ""
         self.log(f"✅ [슬롯 추가] {symbol} ({name}) {buy_qty}주 매수 주문{pct_label} ≈ ${est_amount:,.0f}", send_tg=True)
         self._log_trade(symbol, "매수", buy_qty, buy_price, est_amount, f"[슬롯 추가] 초기 매수{pct_label}")
 
@@ -1474,8 +1491,138 @@ class TradingBot:
             return f"자동({'공격' if self.auto_active_mode == 'aggressive' else '방어'})"
         return "공격" if self.strategy_mode == "aggressive" else "방어"
 
+    def _pick_pending_order(self, orders: List[Dict[str, Any]], symbol: str, side: str) -> Optional[Dict[str, Any]]:
+        candidates: List[Dict[str, Any]] = []
+        for order in orders:
+            if str(order.get("symbol", "")).upper() != symbol.upper():
+                continue
+            if str(order.get("side", "")) != side:
+                continue
+            try:
+                rem_qty: int = int(float(order.get("remaining_qty", 0)))
+            except Exception:
+                rem_qty = 0
+            if rem_qty <= 0:
+                continue
+            candidates.append(order)
+
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda o: (
+                int(float(o.get("remaining_qty", 0) or 0)),
+                str(o.get("order_time", "")),
+                str(o.get("order_no", "")),
+            ),
+            reverse=True,
+        )
+        return candidates[0]
+
+    def _start_smart_buy_manager(
+        self,
+        symbol: str,
+        total_qty: int,
+        initial_price: float,
+        reason: str,
+        prefer_daytime: bool,
+    ) -> None:
+        def _worker() -> None:
+            start_ts: float = time.time()
+            last_price: float = initial_price
+            last_remaining: int = total_qty
+
+            try:
+                for after_sec, premium in SMART_BUY_REPRICE_STEPS:
+                    sleep_sec: float = after_sec - (time.time() - start_ts)
+                    if sleep_sec > 0:
+                        time.sleep(sleep_sec)
+
+                    orders: List[Dict[str, Any]] = self.api.get_pending_orders(symbols=["__ALL__"])
+                    pending: Optional[Dict[str, Any]] = self._pick_pending_order(orders, symbol, "매수")
+                    if not pending:
+                        return
+
+                    try:
+                        remaining_qty: int = int(float(pending.get("remaining_qty", 0)))
+                    except Exception:
+                        remaining_qty = 0
+                    if remaining_qty <= 0:
+                        continue
+                    last_remaining = remaining_qty
+
+                    order_no: str = str(pending.get("order_no", "")).strip()
+                    if not order_no:
+                        continue
+
+                    canceled: bool = self.api.cancel_order(
+                        order_no=order_no,
+                        symbol=symbol,
+                        remaining_qty=remaining_qty,
+                        prefer_daytime=prefer_daytime,
+                    )
+                    if not canceled:
+                        continue
+
+                    time.sleep(0.25)
+                    current_price: float = float(self.api.get_current_price(symbol, prefer_daytime=prefer_daytime) or 0.0)
+                    if current_price <= 0:
+                        current_price = last_price
+                    new_price: float = round(current_price * (1.0 + premium), 2)
+                    if new_price <= 0:
+                        continue
+
+                    reordered: bool = self.api.place_order(
+                        symbol=symbol,
+                        quantity=remaining_qty,
+                        price=new_price,
+                        is_buy=True,
+                        prefer_daytime=prefer_daytime,
+                    )
+                    if reordered:
+                        last_price = new_price
+                        self.log(
+                            f"🔁 [매수 재호가] {symbol} 잔량 {remaining_qty}주 @ ${new_price:.2f} "
+                            f"(현재가 기준 +{premium*100:.2f}%)",
+                            send_tg=False,
+                        )
+                    else:
+                        self.send_telegram_message(
+                            f"⚠️ [매수 재호가 실패]\n종목: {symbol}\n잔량: {remaining_qty}주\n"
+                            f"사유: {reason}\n재주문가: ${new_price:.2f}\n수동으로 미체결 주문을 확인해주세요."
+                        )
+                        self.log(
+                            f"⚠️ [매수 재호가 실패] {symbol} 잔량 {remaining_qty}주 @ ${new_price:.2f}",
+                            send_tg=False,
+                        )
+                        return
+
+                while (time.time() - start_ts) < SMART_BUY_MONITOR_SEC:
+                    time.sleep(5)
+                    orders = self.api.get_pending_orders(symbols=["__ALL__"])
+                    pending = self._pick_pending_order(orders, symbol, "매수")
+                    if not pending:
+                        return
+                    try:
+                        last_remaining = int(float(pending.get("remaining_qty", last_remaining)))
+                    except Exception:
+                        pass
+
+                self.send_telegram_message(
+                    f"⏰ [매수 미체결]\n종목: {symbol}\n잔량: {last_remaining}주\n"
+                    f"사유: {reason}\n최근 주문가: ${last_price:.2f}\n5분간 완전 체결되지 않았습니다."
+                )
+                self.log(
+                    f"⏰ [매수 미체결] {symbol} 잔량 {last_remaining}주 ({reason}) @ ${last_price:.2f}",
+                    send_tg=False,
+                )
+            except Exception as e:
+                self.log(f"[매수 추격형 오류] {symbol}: {e}", send_tg=False)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _place_calculated_order(self, symbol: str, price: float, target_budget: float, tier_name: str, buy_ratio: float = 0.0, prev_close: float = 0.0) -> bool:
-        buy_price: float = round(price * 1.005, 2)
+        buy_price: float = round(price * (1.0 + SMART_BUY_INITIAL_PREMIUM), 2)
         qty_to_buy: int = int(target_budget / buy_price)
         if target_budget > 0 and qty_to_buy == 0:
             qty_to_buy = 1
@@ -1483,8 +1630,18 @@ class TradingBot:
         required_cash: float = qty_to_buy * buy_price
 
         if qty_to_buy > 0 and self.last_usd_balance >= required_cash:
-            success: bool = self.api.place_order(symbol, qty_to_buy, buy_price, is_buy=True)
+            now_et: datetime = self.get_eastern_time()
+            now_kst: datetime = self.get_korean_time()
+            prefer_daytime: bool = self.is_daytime_market_open(now_kst) and (not self.is_active_trading_time(now_et))
+            success: bool = self.api.place_order(symbol, qty_to_buy, buy_price, is_buy=True, prefer_daytime=prefer_daytime)
             if success:
+                self._start_smart_buy_manager(
+                    symbol=symbol,
+                    total_qty=qty_to_buy,
+                    initial_price=buy_price,
+                    reason=tier_name,
+                    prefer_daytime=prefer_daytime,
+                )
                 self.last_usd_balance -= required_cash
                 self.last_krw_balance -= required_cash * self.exchange_rate
                 mode_label: str = self._get_mode_label()
