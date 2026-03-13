@@ -140,8 +140,10 @@ def create_status_router(
                 "slots": active_slots,
                 "max_slots": bot.slot_manager.max_slots,
                 "market_open": bot.is_active_trading_time(bot.get_eastern_time()),
+                "daytime_open": bot.is_daytime_market_open(bot.get_korean_time()),
                 "is_dst": bool(bot.get_eastern_time().dst()),
                 "et_time": bot.get_eastern_time().strftime("%H:%M"),
+                "kst_time": bot.get_korean_time().strftime("%H:%M"),
             }
         except Exception as error:
             try:

@@ -1,8 +1,10 @@
 import os
 import time
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import requests
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import ccxt
 
 def retry_api(max_retries: int = 3) -> Any:
@@ -37,6 +39,8 @@ class KoreaInvestmentAPI:
 
         self._exchange_cache: Dict[str, str] = {}
         self._EXCHANGE_MAP: Dict[str, str] = {"NAS": "NASD", "NYS": "NYSE", "AMS": "AMEX"}
+        daytime_flag: str = os.getenv("KIS_ENABLE_DAYTIME_TRADING", "true").strip().lower()
+        self.enable_daytime_trading: bool = daytime_flag not in ("0", "false", "off", "no")
 
     def _get_exchange_code(self, symbol: str, style: str = "short") -> str:
         if symbol in self._exchange_cache:
@@ -303,11 +307,18 @@ class KoreaInvestmentAPI:
             return 0.0
 
     @retry_api(max_retries=3)
-    def place_order(self, symbol: str, quantity: float, price: float, is_buy: bool) -> bool:
-        url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
-        tr_id: str = "TTTT1002U" if is_buy else "TTTT1006U"
-        if self.is_mock:
-            tr_id = "V" + tr_id[1:]
+    def place_order(self, symbol: str, quantity: float, price: float, is_buy: bool, prefer_daytime: bool = False) -> bool:
+        use_daytime: bool = prefer_daytime and (not self.is_mock) and self.enable_daytime_trading
+        if use_daytime:
+            url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/daytime-order"
+            tr_id: str = "TTTS6036U" if is_buy else "TTTS6037U"
+            mode_label: str = "주간거래"
+        else:
+            url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
+            tr_id = "TTTT1002U" if is_buy else "TTTT1006U"
+            if self.is_mock:
+                tr_id = "V" + tr_id[1:]
+            mode_label = "일반거래"
         formatted_price: str = f"{price:.2f}"
         ord_dvsn: str = "00"
 
@@ -323,7 +334,7 @@ class KoreaInvestmentAPI:
             "ORD_SVR_DVSN_CD": "0",
             "ORD_DVSN": ord_dvsn
         }
-        print(f"[주문 요청] {tr_id} | {symbol} ({excg_cd}) {'매수' if is_buy else '매도'} {int(quantity)}주 @ ${formatted_price}")
+        print(f"[주문 요청] {mode_label} {tr_id} | {symbol} ({excg_cd}) {'매수' if is_buy else '매도'} {int(quantity)}주 @ ${formatted_price}")
         res = requests.post(url, headers=headers, json=payload)
         
         try:
@@ -391,34 +402,61 @@ class KoreaInvestmentAPI:
         return orders
 
     @retry_api(max_retries=3)
-    def cancel_order(self, order_no: str, symbol: str, remaining_qty: int) -> bool:
-        tr_id: str = "VTTT1004U" if self.is_mock else "TTTT1004U"
-        url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/order-rvsecncl"
-        headers: Dict[str, str] = self.get_headers(tr_id)
-        payload: Dict[str, str] = {
-            "CANO": self.account_no,
-            "ACNT_PRDT_CD": self.account_code,
-            "OVRS_EXCG_CD": self._get_exchange_code(symbol, "long"),
-            "PDNO": symbol,
-            "ORGN_ODNO": order_no,
-            "RVSE_CNCL_DVSN_CD": "02",
-            "ORD_QTY": str(remaining_qty),
-            "OVRS_ORD_UNPR": "0",
-            "ORD_SVR_DVSN_CD": "0"
-        }
-        res = requests.post(url, headers=headers, json=payload)
+    def cancel_order(self, order_no: str, symbol: str, remaining_qty: int, prefer_daytime: bool = False) -> bool:
+        def _cancel_once(daytime: bool) -> Tuple[bool, str]:
+            if daytime:
+                tr_id: str = "TTTS6038U"
+                url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/daytime-order-rvsecncl"
+                mode_label: str = "주간거래"
+            else:
+                tr_id = "VTTT1004U" if self.is_mock else "TTTT1004U"
+                url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order-rvsecncl"
+                mode_label = "일반거래"
+
+            headers: Dict[str, str] = self.get_headers(tr_id)
+            payload: Dict[str, str] = {
+                "CANO": self.account_no,
+                "ACNT_PRDT_CD": self.account_code,
+                "OVRS_EXCG_CD": self._get_exchange_code(symbol, "long"),
+                "PDNO": symbol,
+                "ORGN_ODNO": order_no,
+                "RVSE_CNCL_DVSN_CD": "02",
+                "ORD_QTY": str(remaining_qty),
+                "OVRS_ORD_UNPR": "0",
+                "ORD_SVR_DVSN_CD": "0"
+            }
+            res = requests.post(url, headers=headers, json=payload)
+            try:
+                data: Dict[str, Any] = res.json()
+            except Exception:
+                return False, f"{mode_label} HTTP {res.status_code}"
+
+            if data.get('rt_cd') != '0':
+                return False, f"{mode_label} {data.get('msg1', '')}"
+
+            return True, mode_label
+
+        try_daytime_first: bool = prefer_daytime and (not self.is_mock) and self.enable_daytime_trading
+        attempt_order: List[bool] = [True, False] if try_daytime_first else [False, True]
+        if self.is_mock:
+            attempt_order = [False]
+
+        last_error: str = ""
+        for daytime in attempt_order:
+            ok, detail = _cancel_once(daytime)
+            if ok:
+                print(f"[주문 취소 성공] {symbol} 주문번호 {order_no} ({detail})")
+                return True
+            last_error = detail
+
         try:
-            data: Dict[str, Any] = res.json()
+            now_kst: str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
-            print(f"[주문 취소 실패] HTTP {res.status_code}")
+            now_kst = "-"
+        if last_error:
+            print(f"[주문 취소 실패] {last_error} | KST {now_kst}")
             return False
-
-        if data.get('rt_cd') != '0':
-            print(f"[주문 취소 실패] {data.get('msg1', '')}")
-            return False
-
-        print(f"[주문 취소 성공] {symbol} 주문번호 {order_no}")
-        return True
+        return False
 
     def cancel_all_orders(self) -> None:
         print("[API] 모든 미체결 주문 취소 요청을 전송합니다.")

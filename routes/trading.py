@@ -56,15 +56,20 @@ def create_trading_router(
                 return {"success": False, "message": f"{symbol} 현재가를 가져올 수 없습니다."}
 
             now_et = bot.get_eastern_time()
+            now_kst = bot.get_korean_time()
             is_regular: bool = bot.is_regular_market_open(now_et)
-            if is_regular:
+            is_daytime: bool = bot.is_daytime_market_open(now_kst)
+            if is_daytime:
+                sell_price = round(current_price * 0.995, 2)
+                order_desc = f"주간거래 지정가 ${sell_price:.2f} (현재가 -0.5%)"
+            elif is_regular:
                 sell_price: float = round(current_price * 0.98, 2)
                 order_desc: str = f"시장가 (하한 ${sell_price:.2f})"
             else:
                 sell_price = round(current_price * 0.995, 2)
                 order_desc = f"지정가 ${sell_price:.2f} (현재가 -0.5%)"
 
-            success: bool = bot.api.place_order(symbol, sell_qty, sell_price, is_buy=False)
+            success: bool = bot.api.place_order(symbol, sell_qty, sell_price, is_buy=False, prefer_daytime=is_daytime)
             if success:
                 bot.manual_sell_block[symbol] = time.time()
                 invalidate_status_cache()
@@ -131,7 +136,13 @@ def create_trading_router(
             return {"success": False, "message": "주문번호와 종목이 필요합니다."}
 
         try:
-            success: bool = bot.api.cancel_order(order_no, symbol, remaining_qty)
+            now_kst = bot.get_korean_time()
+            success: bool = bot.api.cancel_order(
+                order_no,
+                symbol,
+                remaining_qty,
+                prefer_daytime=bot.is_daytime_market_open(now_kst),
+            )
             if success:
                 bot.log(f"🚫 [주문취소] {symbol} 주문번호 {order_no}")
                 return {"success": True, "message": f"{symbol} 주문 취소 완료"}

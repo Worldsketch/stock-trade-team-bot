@@ -370,8 +370,11 @@ class TradingBot:
         """슬롯에 종목을 추가합니다. buy_percent > 0이면 총자산 대비 해당 비율만큼 매수."""
         symbol = symbol.upper().strip()
         now_et: datetime = datetime.now(ZoneInfo("America/New_York"))
-        if not self.is_active_trading_time(now_et):
-            return {"success": False, "message": "거래 가능 시간에만 종목을 추가할 수 있습니다. (프리마켓~정규장)"}
+        now_kst: datetime = now_et.astimezone(ZoneInfo("Asia/Seoul"))
+        is_us_session: bool = self.is_active_trading_time(now_et)
+        is_daytime_session: bool = self.is_daytime_market_open(now_kst)
+        if not (is_us_session or is_daytime_session):
+            return {"success": False, "message": "거래 가능 시간에만 종목을 추가할 수 있습니다. (미국장 ET 04:00~20:00 / 데이장 KST 09:00~16:00)"}
         if self.slot_manager.is_full():
             return {"success": False, "message": f"슬롯이 가득 찼습니다. (최대 {self.slot_manager.max_slots}개)"}
         if self.slot_manager.has_symbol(symbol):
@@ -442,7 +445,8 @@ class TradingBot:
                 return {"success": False, "message": f"매수 수량 계산 실패: {e}"}
 
         buy_price: float = round(current_price * 1.005, 2)
-        success: bool = self.api.place_order(symbol, buy_qty, buy_price, is_buy=True)
+        prefer_daytime: bool = is_daytime_session and (not is_us_session)
+        success: bool = self.api.place_order(symbol, buy_qty, buy_price, is_buy=True, prefer_daytime=prefer_daytime)
         if not success:
             return {"success": False, "message": f"{symbol} {buy_qty}주 매수 주문 실패"}
 
@@ -495,7 +499,9 @@ class TradingBot:
                         price = self.api.get_current_price(symbol)
                     sell_price: float = round(price * 0.99, 2)
                     pos_avg: float = position.get("avg_price", 0.0)
-                    order_ok: bool = self.api.place_order(symbol, qty, sell_price, is_buy=False)
+                    now_kst: datetime = self.get_korean_time()
+                    prefer_daytime: bool = self.is_daytime_market_open(now_kst)
+                    order_ok: bool = self.api.place_order(symbol, qty, sell_price, is_buy=False, prefer_daytime=prefer_daytime)
                     if order_ok:
                         self._log_trade(symbol, "매도", qty, sell_price, qty * sell_price, "[슬롯 제거] 전량 매도", avg_price=pos_avg)
                         self.log(f"📤 [슬롯 제거] {symbol} {qty}주 전량 매도 주문", send_tg=True)
@@ -688,6 +694,9 @@ class TradingBot:
     def get_eastern_time(self) -> datetime:
         return datetime.now(ZoneInfo("America/New_York"))
 
+    def get_korean_time(self) -> datetime:
+        return datetime.now(ZoneInfo("Asia/Seoul"))
+
     def is_regular_market_open(self, now_et: datetime) -> bool:
         if now_et.weekday() >= 5 or self.is_us_market_holiday(now_et):
             return False
@@ -706,6 +715,20 @@ class TradingBot:
         after_market_close = now_et.replace(hour=20, minute=0, second=0, microsecond=0)
 
         return pre_market_open <= now_et < after_market_close
+
+    def is_daytime_market_open(self, now_kst: Optional[datetime] = None) -> bool:
+        if now_kst is None:
+            now_kst = self.get_korean_time()
+        if now_kst.weekday() >= 5:
+            return False
+
+        now_et: datetime = now_kst.astimezone(ZoneInfo("America/New_York"))
+        if self.is_us_market_holiday(now_et):
+            return False
+
+        daytime_open: datetime = now_kst.replace(hour=9, minute=0, second=0, microsecond=0)
+        daytime_close: datetime = now_kst.replace(hour=16, minute=0, second=0, microsecond=0)
+        return daytime_open <= now_kst < daytime_close
 
     def send_telegram_message(self, message: str, max_retries: int = 3) -> None:
         token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -1320,7 +1343,9 @@ class TradingBot:
         
         for sym, qty, prc in zip(symbols_to_close, quants, prices):
             self.log(f"⚠️ [강제 청산] {sym} 매도 주문: {int(qty)}주", send_tg=True)
-            self.api.place_order(sym, int(qty), prc, is_buy=False)
+            now_kst: datetime = self.get_korean_time()
+            prefer_daytime: bool = self.is_daytime_market_open(now_kst)
+            self.api.place_order(sym, int(qty), prc, is_buy=False, prefer_daytime=prefer_daytime)
             
         self.log("[Graceful Shutdown] 모든 포지션 정리 완료")
 
