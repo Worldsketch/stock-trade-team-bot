@@ -539,6 +539,7 @@
         let _removeTarget = '';
         let _statusFetchInFlight = false;
         let _chartFetchController = null;
+        let _chartDataCache = new Map();
         let _chartLastKey = '';
         let _chartQuoteController = null;
         let _statusTimer = null;
@@ -549,8 +550,12 @@
         let _pollRiskUntil = 0;
         const POLL_NORMAL_MS = 3000;
         const POLL_RISK_MS = 6000;
+        const POLL_CHART_NORMAL_MS = 60000;
+        const POLL_CHART_RISK_MS = 120000;
         const POLL_RISK_HOLD_MS = 60000;
         const POLL_SLOW_THRESHOLD_MS = 2500;
+        const CHART_CLIENT_CACHE_INTRADAY_MS = 20000;
+        const CHART_CLIENT_CACHE_DAILY_MS = 300000;
 
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/static/sw.js').catch(() => {});
@@ -602,6 +607,11 @@
             document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
             document.getElementById('tab-' + tabId).classList.add('active');
             document.querySelector(`[data-tab="${tabId}"]`).classList.add('active');
+            if (tabId === 'dashboard' && currentChartSymbol) {
+                loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval, { keepRange: true })
+                    .then(() => fetchChartQuote())
+                    .catch(() => {});
+            }
             if (tabId === 'trades') fetchTradeHistory();
             if (tabId === 'equity') fetchEquityHistory();
             if (tabId === 'strategy') fetchStrategyParams();
@@ -636,10 +646,101 @@
             lwChart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
         }
 
+        function getChartDataCacheKey(symbol, period, interval) {
+            return `${symbol}_${period}_${interval}_${CHART_SESSION}`;
+        }
+
+        function getChartDataCacheTtlMs(interval) {
+            if (String(interval || '').endsWith('m')) return CHART_CLIENT_CACHE_INTRADAY_MS;
+            return CHART_CLIENT_CACHE_DAILY_MS;
+        }
+
+        function getCachedChartData(cacheKey, interval) {
+            const cached = _chartDataCache.get(cacheKey);
+            if (!cached) return null;
+            if ((Date.now() - cached.ts) > getChartDataCacheTtlMs(interval)) {
+                _chartDataCache.delete(cacheKey);
+                return null;
+            }
+            return cached.data;
+        }
+
+        function setCachedChartData(cacheKey, data) {
+            _chartDataCache.set(cacheKey, { ts: Date.now(), data });
+            if (_chartDataCache.size > 32) {
+                const oldestKey = _chartDataCache.keys().next().value;
+                if (oldestKey) _chartDataCache.delete(oldestKey);
+            }
+        }
+
+        function renderChartData(symbol, period, interval, data, keepRange) {
+            if (!data.candles || data.candles.length === 0) {
+                candleSeries.setData([]);
+                volumeSeries.setData([]);
+                candleSeries.setMarkers([]);
+                _lastCandle = null;
+                _lastCandleSession = 'all';
+                return true;
+            }
+
+            candleSeries.setData(data.candles);
+            _lastCandle = data.candles.length > 0 ? { ...data.candles[data.candles.length - 1] } : null;
+            _lastCandleSession = data.candles.length > 0 ? (data.candles[data.candles.length - 1].session || 'all') : 'all';
+            volumeSeries.setData(data.candles.map(c => ({
+                time: c.time, value: c.volume, color: c.close >= c.open ? 'rgba(16,185,129,0.25)' : 'rgba(244,63,94,0.25)'
+            })));
+
+            const markers = [];
+            if (data.trades && data.trades.length > 0) {
+                const firstTime = data.candles[0].time;
+                const lastTime = data.candles[data.candles.length - 1].time;
+                data.trades.forEach(t => {
+                    if (t.side !== '매수' && t.side !== '매도') return;
+                    const d = new Date(t.time);
+                    const ts = Math.floor(d.getTime() / 1000);
+                    if (ts >= firstTime && ts <= lastTime) {
+                        markers.push({
+                            time: ts,
+                            position: t.side === '매수' ? 'belowBar' : 'aboveBar',
+                            color: t.side === '매수' ? '#10b981' : '#f43f5e',
+                            shape: t.side === '매수' ? 'arrowUp' : 'arrowDown',
+                            text: `${t.side} ${t.qty}주`,
+                        });
+                    }
+                });
+                markers.sort((a, b) => a.time - b.time);
+            }
+            candleSeries.setMarkers(markers);
+
+            const chartKey = getChartDataCacheKey(symbol, period, interval);
+            if (!keepRange || _chartLastKey !== chartKey) {
+                lwChart.timeScale().fitContent();
+            }
+            _chartLastKey = chartKey;
+
+            const liveIndicator = document.getElementById('chartLiveIndicator');
+            if (liveIndicator && data.source) {
+                liveIndicator.title = `차트 소스: ${data.source}`;
+            }
+            return true;
+        }
+
         async function loadChartData(symbol, period, interval, options = {}) {
             const keepRange = options.keepRange === true;
+            const allowCache = options.allowCache !== false;
             const auth = getAuthHeader();
             if (!auth) return null;
+
+            const cacheKey = getChartDataCacheKey(symbol, period, interval);
+            if (allowCache) {
+                const cachedData = getCachedChartData(cacheKey, interval);
+                if (cachedData) {
+                    if (symbol !== currentChartSymbol || period !== currentChartPeriod || interval !== currentChartInterval) return null;
+                    if ((cachedData.session || 'all') !== CHART_SESSION) return null;
+                    return renderChartData(symbol, period, interval, cachedData, keepRange);
+                }
+            }
+
             if (_chartFetchController) _chartFetchController.abort();
             _chartFetchController = new AbortController();
             try {
@@ -656,55 +757,8 @@
                 const data = await res.json();
                 if (symbol !== currentChartSymbol || period !== currentChartPeriod || interval !== currentChartInterval) return null;
                 if ((data.session || 'all') !== CHART_SESSION) return null;
-                if (!data.candles || data.candles.length === 0) {
-                    candleSeries.setData([]);
-                    volumeSeries.setData([]);
-                    candleSeries.setMarkers([]);
-                    _lastCandle = null;
-                    _lastCandleSession = 'all';
-                    return true;
-                }
-
-                candleSeries.setData(data.candles);
-                _lastCandle = data.candles.length > 0 ? { ...data.candles[data.candles.length - 1] } : null;
-                _lastCandleSession = data.candles.length > 0 ? (data.candles[data.candles.length - 1].session || 'all') : 'all';
-                volumeSeries.setData(data.candles.map(c => ({
-                    time: c.time, value: c.volume, color: c.close >= c.open ? 'rgba(16,185,129,0.25)' : 'rgba(244,63,94,0.25)'
-                })));
-
-                const markers = [];
-                if (data.trades && data.trades.length > 0) {
-                    const firstTime = data.candles[0].time;
-                    const lastTime = data.candles[data.candles.length - 1].time;
-                    data.trades.forEach(t => {
-                        if (t.side !== '매수' && t.side !== '매도') return;
-                        const d = new Date(t.time);
-                        const ts = Math.floor(d.getTime() / 1000);
-                        if (ts >= firstTime && ts <= lastTime) {
-                            markers.push({
-                                time: ts,
-                                position: t.side === '매수' ? 'belowBar' : 'aboveBar',
-                                color: t.side === '매수' ? '#10b981' : '#f43f5e',
-                                shape: t.side === '매수' ? 'arrowUp' : 'arrowDown',
-                                text: `${t.side} ${t.qty}주`,
-                            });
-                        }
-                    });
-                    markers.sort((a, b) => a.time - b.time);
-                }
-                candleSeries.setMarkers(markers);
-
-                const chartKey = `${symbol}_${period}_${interval}_${CHART_SESSION}`;
-                if (!keepRange || _chartLastKey !== chartKey) {
-                    lwChart.timeScale().fitContent();
-                }
-                _chartLastKey = chartKey;
-
-                const liveIndicator = document.getElementById('chartLiveIndicator');
-                if (liveIndicator && data.source) {
-                    liveIndicator.title = `차트 소스: ${data.source}`;
-                }
-                return true;
+                setCachedChartData(cacheKey, data);
+                return renderChartData(symbol, period, interval, data, keepRange);
             } catch(e) {
                 if (e.name !== 'AbortError') {
                     console.error('Chart data error:', e);
@@ -715,6 +769,7 @@
         }
 
         function changeChart(symbol) {
+            if (symbol === currentChartSymbol) return;
             currentChartSymbol = symbol;
             document.querySelectorAll('#chartBtnGroup .chart-btn').forEach(btn => {
                 btn.classList.toggle('active', btn.dataset.symbol === symbol);
@@ -723,6 +778,7 @@
         }
 
         function setChartPeriod(period, interval) {
+            if (period === currentChartPeriod && interval === currentChartInterval) return;
             currentChartPeriod = period;
             currentChartInterval = interval;
             document.querySelectorAll('#chartPeriodGroup .chart-period-btn').forEach(btn => {
@@ -871,7 +927,19 @@
             }
         }
 
+        function isDashboardTabActive() {
+            const tab = document.getElementById('tab-dashboard');
+            return !!(tab && tab.classList.contains('active'));
+        }
+
+        function isDashboardRealtimeActive() {
+            return isDashboardTabActive() && document.visibilityState === 'visible';
+        }
+
         function getPollMs(kind) {
+            if (kind === 'chart') {
+                return isPollRiskMode() ? POLL_CHART_RISK_MS : POLL_CHART_NORMAL_MS;
+            }
             return isPollRiskMode() ? POLL_RISK_MS : POLL_NORMAL_MS;
         }
 
@@ -914,7 +982,7 @@
             if (gen !== _pollGeneration) return;
             let ok = null;
             const started = performance.now();
-            if (currentChartSymbol) {
+            if (currentChartSymbol && isDashboardRealtimeActive()) {
                 ok = await loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval, { keepRange: true });
             }
             const elapsed = performance.now() - started;
@@ -928,7 +996,7 @@
         async function runQuotePoll(gen) {
             if (gen !== _pollGeneration) return;
             const started = performance.now();
-            const ok = await fetchChartQuote();
+            const ok = isDashboardRealtimeActive() ? await fetchChartQuote() : null;
             const elapsed = performance.now() - started;
             if (ok === false || (ok === true && elapsed >= POLL_SLOW_THRESHOLD_MS)) {
                 enterPollRisk(`quote ${Math.round(elapsed)}ms`);
