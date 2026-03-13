@@ -236,6 +236,20 @@ def create_chart_router(
                 price = live_data_cache.get_price_from_portfolio(symbol, ttl_sec=3.0)
                 if price > 0:
                     source = "shared_portfolio"
+            if price <= 0:
+                bot_snapshot = bot.get_live_snapshot(max_age_sec=12.0)
+                if bot_snapshot:
+                    for pos in bot_snapshot.get("positions", []) or []:
+                        if str(pos.get("symbol", "")).upper() != symbol.upper():
+                            continue
+                        try:
+                            snap_price = float(pos.get("current_price", 0.0) or 0.0)
+                        except Exception:
+                            snap_price = 0.0
+                        if snap_price > 0:
+                            price = snap_price
+                            source = "bot_snapshot"
+                            break
             try:
                 if price <= 0:
                     price = float(bot.api.get_current_price(symbol, prefer_daytime=(session == "daytime")))

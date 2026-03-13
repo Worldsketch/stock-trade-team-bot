@@ -3,6 +3,7 @@ import sys
 import signal
 import time
 import threading
+import copy
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional, Set, Tuple
@@ -131,6 +132,7 @@ class TradingBot:
         self.is_running: bool = False
         self.last_usd_balance: float = 0.0
         self.last_krw_balance: float = 0.0
+        self.last_krw_cash: float = 0.0
         self.exchange_rate: float = 1400.0
         self.tot_evlu_pfls: float = 0.0
         self.tot_pchs_amt: float = 0.0
@@ -147,6 +149,10 @@ class TradingBot:
         self._last_sma_recheck: float = 0.0
         self._daily_closes_cache: Dict[str, Dict[str, Any]] = {}
         self._daily_closes_cache_ttl_sec: float = 1800.0
+        self._live_snapshot_lock = threading.Lock()
+        self._live_snapshot: Dict[str, Any] = {}
+        self._last_live_snapshot_ts: float = 0.0
+        self._live_snapshot_interval_sec: float = 5.0
         
         # 수동 매도 후 매수 차단 (타임스탬프)
         self.manual_sell_block: Dict[str, float] = {}
@@ -1072,6 +1078,95 @@ class TradingBot:
             return self.last_usd_balance + float((self.positions['quantity'] * self.positions['current_price']).sum())
         return self.last_usd_balance
 
+    def _build_live_snapshot(self) -> Dict[str, Any]:
+        active_slots = self.slot_manager.get_active_slots()
+        slot_map: Dict[str, Dict[str, Any]] = {slot.get("symbol"): slot for slot in active_slots}
+        current_symbols: List[str] = self.symbols
+        row_map: Dict[str, Dict[str, Any]] = {}
+        if not self.positions.empty:
+            for _, row in self.positions.iterrows():
+                sym = str(row.get("symbol", ""))
+                if not sym:
+                    continue
+                row_map[sym] = {
+                    "quantity": float(row.get("quantity", 0.0) or 0.0),
+                    "avg_price": float(row.get("avg_price", 0.0) or 0.0),
+                    "current_price": float(row.get("current_price", 0.0) or 0.0),
+                    "return_rate": float(row.get("return_rate", 0.0) or 0.0),
+                }
+
+        positions: List[Dict[str, Any]] = []
+        calc_tot_stck: float = 0.0
+        calc_tot_pchs: float = 0.0
+        calc_tot_pfls: float = 0.0
+        for sym in current_symbols:
+            slot_info = slot_map.get(sym, {})
+            row = row_map.get(sym, {})
+            qty: float = float(row.get("quantity", 0.0))
+            avg_price: float = float(row.get("avg_price", 0.0))
+            current_price: float = float(row.get("current_price", 0.0))
+            evlu_amt: float = max(qty * current_price, 0.0)
+            pchs_amt: float = max(qty * avg_price, 0.0)
+            evlu_pfls: float = evlu_amt - pchs_amt
+            return_rate: float = float(row.get("return_rate", 0.0))
+            if avg_price > 0 and current_price > 0 and return_rate == 0.0:
+                return_rate = ((current_price - avg_price) / avg_price) * 100.0
+
+            positions.append(
+                {
+                    "symbol": sym,
+                    "quantity": qty,
+                    "avg_price": avg_price,
+                    "current_price": current_price,
+                    "evlu_amt": evlu_amt,
+                    "evlu_pfls": evlu_pfls,
+                    "return_rate": return_rate,
+                    "pchs_amt": pchs_amt,
+                    "is_leveraged": slot_info.get("is_leveraged", False),
+                    "base_asset": slot_info.get("base_asset", sym),
+                    "base_price": 0.0,
+                }
+            )
+            calc_tot_stck += evlu_amt
+            calc_tot_pchs += pchs_amt
+            calc_tot_pfls += evlu_pfls
+
+        tot_stck_evlu: float = self.tot_stck_evlu if self.tot_stck_evlu > 0 else calc_tot_stck
+        tot_pchs_amt: float = self.tot_pchs_amt if self.tot_pchs_amt > 0 else calc_tot_pchs
+        tot_evlu_pfls: float = self.tot_evlu_pfls if self.tot_stck_evlu > 0 else calc_tot_pfls
+
+        return {
+            "ts": time.time(),
+            "usd_balance": float(self.last_usd_balance),
+            "krw_balance": float(self.last_krw_balance),
+            "krw_cash": float(self.last_krw_cash),
+            "exchange_rate": float(self.exchange_rate),
+            "tot_stck_evlu": float(tot_stck_evlu),
+            "tot_pchs_amt": float(tot_pchs_amt),
+            "tot_evlu_pfls": float(tot_evlu_pfls),
+            "positions": positions,
+        }
+
+    def _publish_live_snapshot(self) -> None:
+        snapshot: Dict[str, Any] = self._build_live_snapshot()
+        with self._live_snapshot_lock:
+            self._live_snapshot = snapshot
+            self._last_live_snapshot_ts = float(snapshot.get("ts", time.time()))
+
+    def get_live_snapshot(self, max_age_sec: float = 12.0) -> Optional[Dict[str, Any]]:
+        with self._live_snapshot_lock:
+            snapshot = self._live_snapshot
+            if not snapshot:
+                return None
+            ts = float(snapshot.get("ts", 0.0))
+            if (time.time() - ts) > max_age_sec:
+                return None
+            return copy.deepcopy(snapshot)
+
+    def refresh_live_snapshot(self) -> None:
+        self.sync_positions()
+        self._publish_live_snapshot()
+
     def sync_positions(self) -> None:
         item_cd: str = self.symbols[0] if self.symbols else "AAPL"
         data: Dict[str, Any] = self.api.get_balance_and_positions(item_cd=item_cd, symbols=self.symbols)
@@ -1090,6 +1185,9 @@ class TradingBot:
             self.last_krw_balance = api_krw
         else:
             self.last_krw_balance = self.last_usd_balance * self.exchange_rate
+        api_krw_cash: float = data.get("krw_cash", 0.0)
+        if api_krw_cash >= 0:
+            self.last_krw_cash = api_krw_cash
 
         new_evlu_pfls: float = data.get("tot_evlu_pfls", 0.0)
         new_pchs_amt: float = data.get("tot_pchs_amt", 0.0)
@@ -1167,6 +1265,7 @@ class TradingBot:
     def fetch_market_data(self) -> None:
         self.sync_positions()
         if self.positions.empty:
+            self._publish_live_snapshot()
             if not self._sync_logged:
                 self.log(f"데이터 동기화 완료 | 예수금: ${self.last_usd_balance:.2f} (슬롯 없음)", print_stdout=False)
                 self._sync_logged = True
@@ -1190,6 +1289,7 @@ class TradingBot:
         if not self._sync_logged:
             self.log(f"데이터 동기화 완료 | 예수금: ${self.last_usd_balance:.2f} | 슬롯: {len(self.symbols)}개", print_stdout=False)
             self._sync_logged = True
+        self._publish_live_snapshot()
         
         now_et: datetime = self.get_eastern_time()
         for symbol in self.symbols:
@@ -1471,6 +1571,12 @@ class TradingBot:
                     if not self.is_running:
                         break
                     time.sleep(1)
+                    now_ts: float = time.time()
+                    if (now_ts - self._last_live_snapshot_ts) >= self._live_snapshot_interval_sec:
+                        try:
+                            self.refresh_live_snapshot()
+                        except Exception as snapshot_error:
+                            self.log(f"[스냅샷 갱신 오류] {snapshot_error}", send_tg=False)
             except Exception as e:
                 error_msg = f"🔥 [긴급 에러 발생]\n사유: {e}\n위치: 메인 루프 (run_loop)\n상태: 10초 대기 후 루프 재개 (봇 중단 안됨)"
                 self.send_error_telegram(error_msg)

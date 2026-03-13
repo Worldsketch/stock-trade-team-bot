@@ -47,6 +47,66 @@ def create_status_router(
 
         try:
             started_at: float = time.perf_counter()
+            bot_snapshot: Optional[Dict[str, Any]] = bot.get_live_snapshot(max_age_sec=12.0)
+            if bot_snapshot:
+                positions_list = list(bot_snapshot.get("positions", []))
+                if live_data_cache:
+                    live_data_cache.set_portfolio(
+                        {
+                            "usd_balance": float(bot_snapshot.get("usd_balance", 0.0) or 0.0),
+                            "exchange_rate": float(bot_snapshot.get("exchange_rate", 0.0) or 0.0),
+                            "krw_balance": float(bot_snapshot.get("krw_balance", 0.0) or 0.0),
+                            "krw_cash": float(bot_snapshot.get("krw_cash", 0.0) or 0.0),
+                            "positions": positions_list,
+                            "tot_evlu_pfls": float(bot_snapshot.get("tot_evlu_pfls", 0.0) or 0.0),
+                            "tot_pchs_amt": float(bot_snapshot.get("tot_pchs_amt", 0.0) or 0.0),
+                            "tot_stck_evlu": float(bot_snapshot.get("tot_stck_evlu", 0.0) or 0.0),
+                        }
+                    )
+
+                daily_pnl_usd: float = 0.0
+                for position in positions_list:
+                    symbol = position.get("symbol", "")
+                    quantity = float(position.get("quantity", 0.0) or 0.0)
+                    current_price = float(position.get("current_price", 0.0) or 0.0)
+                    previous_close = bot.prev_close.get(symbol, 0.0)
+                    if quantity > 0 and previous_close > 0 and current_price > 0:
+                        daily_pnl_usd += (current_price - previous_close) * quantity
+
+                now_kst = bot.get_korean_time()
+                now_et = bot.get_eastern_time()
+                is_daytime_session: bool = bot.is_daytime_market_open(now_kst)
+                usd_balance = float(bot_snapshot.get("usd_balance", 0.0) or 0.0)
+                tot_stck_evlu = float(bot_snapshot.get("tot_stck_evlu", 0.0) or 0.0)
+                result = {
+                    "is_running": bot.is_running,
+                    "usd_balance": usd_balance,
+                    "krw_balance": float(bot_snapshot.get("krw_balance", 0.0) or 0.0),
+                    "krw_cash": float(bot_snapshot.get("krw_cash", 0.0) or 0.0),
+                    "exchange_rate": float(bot_snapshot.get("exchange_rate", bot.exchange_rate) or bot.exchange_rate),
+                    "positions": positions_list,
+                    "logs": bot.logs,
+                    "tot_evlu_pfls": float(bot_snapshot.get("tot_evlu_pfls", 0.0) or 0.0),
+                    "tot_pchs_amt": float(bot_snapshot.get("tot_pchs_amt", 0.0) or 0.0),
+                    "tot_stck_evlu": tot_stck_evlu,
+                    "total_eval": usd_balance + tot_stck_evlu,
+                    "daily_pnl_usd": round(daily_pnl_usd, 2),
+                    "strategy_mode": bot.strategy_mode,
+                    "auto_active": bot.auto_active_mode,
+                    "realized_pnl": realized_pnl.calculate(),
+                    "slots": bot.slot_manager.get_active_slots(),
+                    "max_slots": bot.slot_manager.max_slots,
+                    "market_open": bot.is_active_trading_time(now_et),
+                    "daytime_open": is_daytime_session,
+                    "is_dst": bool(now_et.dst()),
+                    "et_time": now_et.strftime("%H:%M"),
+                    "kst_time": now_kst.strftime("%H:%M"),
+                    "source": "bot_snapshot",
+                }
+                status_cache["data"] = result
+                status_cache["ts"] = now
+                return result
+
             item_code: str = bot.symbols[0] if bot.symbols else "AAPL"
             data: Optional[Dict[str, Any]] = None
             if live_data_cache:

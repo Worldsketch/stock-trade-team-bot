@@ -42,6 +42,14 @@ def create_trading_router(
                 data = live_data_cache.get_portfolio(ttl_sec=3.0)
                 used_cached_portfolio = data is not None
             if not data:
+                bot_snapshot: Optional[Dict[str, Any]] = bot.get_live_snapshot(max_age_sec=12.0)
+                if bot_snapshot:
+                    data = {
+                        "positions": list(bot_snapshot.get("positions", [])),
+                        "usd_balance": float(bot_snapshot.get("usd_balance", 0.0) or 0.0),
+                        "exchange_rate": float(bot_snapshot.get("exchange_rate", 0.0) or 0.0),
+                    }
+            if not data:
                 data = bot.api.get_balance_and_positions(item_cd=symbol, symbols=bot.symbols)
                 if live_data_cache:
                     live_data_cache.set_portfolio(data)
