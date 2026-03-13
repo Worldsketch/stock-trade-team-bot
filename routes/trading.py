@@ -1,11 +1,20 @@
 import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request
 
 from bot import TradingBot
 from services.live_data_cache import LiveDataCache
+
+SMART_SELL_INITIAL_DISCOUNT: float = 0.003  # -0.3%
+SMART_SELL_REPRICE_STEPS: List[Tuple[int, float]] = [
+    (3, 0.003),   # 3초: 현재가 기준 -0.3%로 재호가
+    (15, 0.006),  # 15초: 현재가 기준 -0.6%
+    (30, 0.010),  # 30초: 현재가 기준 -1.0%
+    (45, 0.012),  # 45초: 현재가 기준 -1.2%
+]
+SMART_SELL_MONITOR_SEC: int = 300
 
 
 def create_trading_router(
@@ -16,6 +25,163 @@ def create_trading_router(
     live_data_cache: Optional[LiveDataCache] = None,
 ) -> APIRouter:
     router = APIRouter()
+
+    def _pick_pending_sell_order(orders: List[Dict[str, Any]], symbol: str) -> Optional[Dict[str, Any]]:
+        candidates: List[Dict[str, Any]] = []
+        for order in orders:
+            if order.get("symbol") != symbol:
+                continue
+            if order.get("side") != "매도":
+                continue
+            try:
+                rem_qty = int(float(order.get("remaining_qty", 0)))
+            except Exception:
+                rem_qty = 0
+            if rem_qty <= 0:
+                continue
+            candidates.append(order)
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda o: (
+                int(float(o.get("remaining_qty", 0) or 0)),
+                str(o.get("order_time", "")),
+                str(o.get("order_no", "")),
+            ),
+            reverse=True,
+        )
+        return candidates[0]
+
+    def _start_smart_sell_manager(
+        symbol: str,
+        total_qty: int,
+        initial_price: float,
+        label: str,
+        is_daytime: bool,
+    ) -> None:
+        def _worker() -> None:
+            start_ts = time.time()
+            last_price = initial_price
+            last_remaining = total_qty
+
+            def _load_pending_orders(bot: TradingBot) -> List[Dict[str, Any]]:
+                if live_data_cache:
+                    live_data_cache.invalidate_pending()
+                return bot.api.get_pending_orders(symbols=bot.symbols)
+
+            try:
+                # 단계형 재호가
+                for after_sec, discount in SMART_SELL_REPRICE_STEPS:
+                    sleep_sec = after_sec - (time.time() - start_ts)
+                    if sleep_sec > 0:
+                        time.sleep(sleep_sec)
+
+                    bot = get_bot()
+                    if not bot:
+                        return
+
+                    orders = _load_pending_orders(bot)
+                    pending = _pick_pending_sell_order(orders, symbol)
+                    if not pending:
+                        filled_qty = max(0, total_qty - last_remaining)
+                        if filled_qty <= 0:
+                            filled_qty = total_qty
+                        filled_amount = filled_qty * last_price
+                        krw_filled = filled_amount * bot.exchange_rate
+                        bot.send_telegram_message(
+                            f"✅ [수동 매도 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주 ({label})\n"
+                            f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f} (약 {krw_filled:,.0f}원)"
+                        )
+                        bot.log(f"✅ [수동매도 체결확인] {symbol} {filled_qty}주 ({label})")
+                        return
+
+                    try:
+                        remaining_qty = int(float(pending.get("remaining_qty", 0)))
+                    except Exception:
+                        remaining_qty = 0
+                    if remaining_qty <= 0:
+                        continue
+                    last_remaining = remaining_qty
+
+                    order_no = str(pending.get("order_no", "")).strip()
+                    if not order_no:
+                        continue
+
+                    canceled = bot.api.cancel_order(
+                        order_no=order_no,
+                        symbol=symbol,
+                        remaining_qty=remaining_qty,
+                        prefer_daytime=is_daytime,
+                    )
+                    if not canceled:
+                        continue
+
+                    # 취소 반영 직후 재호가
+                    time.sleep(0.25)
+                    current_price = float(
+                        bot.api.get_current_price(symbol, prefer_daytime=is_daytime) or 0.0
+                    )
+                    if current_price <= 0:
+                        current_price = last_price
+                    new_price = round(current_price * (1.0 - discount), 2)
+                    if new_price <= 0:
+                        continue
+
+                    reordered = bot.api.place_order(
+                        symbol=symbol,
+                        quantity=remaining_qty,
+                        price=new_price,
+                        is_buy=False,
+                        prefer_daytime=is_daytime,
+                    )
+                    if reordered:
+                        last_price = new_price
+                        if live_data_cache:
+                            live_data_cache.invalidate_pending()
+                        bot.log(
+                            f"🔁 [수동매도 재호가] {symbol} 잔량 {remaining_qty}주 @ ${new_price:.2f} "
+                            f"(현재가 기준 -{discount*100:.1f}%)"
+                        )
+
+                # 마지막 재호가 이후 5분까지 모니터링
+                while (time.time() - start_ts) < SMART_SELL_MONITOR_SEC:
+                    time.sleep(5)
+                    bot = get_bot()
+                    if not bot:
+                        return
+                    orders = _load_pending_orders(bot)
+                    pending = _pick_pending_sell_order(orders, symbol)
+                    if not pending:
+                        filled_qty = max(0, total_qty - last_remaining)
+                        if filled_qty <= 0:
+                            filled_qty = total_qty
+                        filled_amount = filled_qty * last_price
+                        krw_filled = filled_amount * bot.exchange_rate
+                        bot.send_telegram_message(
+                            f"✅ [수동 매도 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주 ({label})\n"
+                            f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f} (약 {krw_filled:,.0f}원)"
+                        )
+                        bot.log(f"✅ [수동매도 체결확인] {symbol} {filled_qty}주 ({label})")
+                        return
+                    try:
+                        last_remaining = int(float(pending.get("remaining_qty", last_remaining)))
+                    except Exception:
+                        pass
+
+                bot = get_bot()
+                if bot:
+                    bot.send_telegram_message(
+                        f"⏰ [수동 매도 미체결]\n종목: {symbol}\n잔량: {last_remaining}주 ({label})\n"
+                        f"최근 주문가: ${last_price:.2f}\n5분간 완전 체결되지 않았습니다."
+                    )
+                    bot.log(f"⏰ [수동매도 미체결] {symbol} 잔량 {last_remaining}주 ({label}) @ ${last_price:.2f}")
+            except Exception as e:
+                bot = get_bot()
+                if bot:
+                    bot.log(f"[수동매도 추격형 오류] {symbol}: {e}")
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
 
     @router.post("/api/sell")
     async def manual_sell(request: Request, username: str = Depends(auth_dependency)) -> Dict[str, Any]:
@@ -86,15 +252,12 @@ def create_trading_router(
             now_kst = bot.get_korean_time()
             is_regular: bool = bot.is_regular_market_open(now_et)
             is_daytime: bool = bot.is_daytime_market_open(now_kst)
-            if is_daytime:
-                sell_price = round(current_price * 0.995, 2)
-                order_desc = f"주간거래 지정가 ${sell_price:.2f} (현재가 -0.5%)"
-            elif is_regular:
-                sell_price: float = round(current_price * 0.98, 2)
-                order_desc: str = f"시장가 (하한 ${sell_price:.2f})"
-            else:
-                sell_price = round(current_price * 0.995, 2)
-                order_desc = f"지정가 ${sell_price:.2f} (현재가 -0.5%)"
+            _ = is_regular  # 향후 세션별 세분화용
+            sell_price: float = round(current_price * (1.0 - SMART_SELL_INITIAL_DISCOUNT), 2)
+            order_desc: str = (
+                f"추격형 지정가 ${sell_price:.2f} "
+                f"(시작 -{SMART_SELL_INITIAL_DISCOUNT*100:.1f}%, 최대 -1.2%)"
+            )
 
             success: bool = bot.api.place_order(symbol, sell_qty, sell_price, is_buy=False, prefer_daytime=is_daytime)
             if success:
@@ -122,12 +285,14 @@ def create_trading_router(
                     f"[{bot._get_mode_label()}] 수동 매도 ({label})",
                     avg_price=manual_avg,
                 )
-                thread = threading.Thread(
-                    target=monitor_sell_fill,
-                    args=(symbol, sell_qty, sell_price, label),
-                    daemon=True,
+                # 체결 보장과 체결가 개선을 위해 추격형 단계 재호가를 백그라운드에서 실행
+                _start_smart_sell_manager(
+                    symbol=symbol,
+                    total_qty=sell_qty,
+                    initial_price=sell_price,
+                    label=label,
+                    is_daytime=is_daytime,
                 )
-                thread.start()
                 return {
                     "success": True,
                     "message": f"{symbol} {sell_qty}주 매도 주문 완료",

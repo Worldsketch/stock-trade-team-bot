@@ -578,6 +578,7 @@
         const INITIAL_PENDING_DELAY_MS = 1200;
         const INITIAL_CHART_DELAY_MS = 350;
         const INITIAL_QUOTE_DELAY_MS = 700;
+        const SMART_SELL_INITIAL_DISCOUNT = 0.003; // -0.3%
 
         function persistChartSymbol(symbol) {
             if (!symbol) return;
@@ -1659,8 +1660,8 @@
         function isMarketTradable() {
             const byServerUs = lastData?.market_open === true;
             const byServerDay = lastData?.daytime_open === true;
-            if (byServerDay) return { open: true, session: '데이장', desc: '주간거래 지정가 (현재가 -0.5%)' };
-            if (byServerUs) return { open: true, session: '미국장', desc: '미국장 주문' };
+            if (byServerDay) return { open: true, session: '데이장', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
+            if (byServerUs) return { open: true, session: '미국장', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
 
             // 서버 상태 수신 전/예외 시 브라우저 시간 기준 폴백
             const now = new Date();
@@ -1668,16 +1669,16 @@
             const kDay = kst.getDay();
             const kMin = kst.getHours() * 60 + kst.getMinutes();
             if (kDay >= 1 && kDay <= 5 && kMin >= 540 && kMin < 960) {
-                return { open: true, session: '데이장', desc: '주간거래 지정가 (현재가 -0.5%)' };
+                return { open: true, session: '데이장', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
             }
 
             const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
             const day = et.getDay();
             const t = et.getHours() * 60 + et.getMinutes();
             if (day !== 0 && day !== 6) {
-                if (t >= 240 && t < 570) return { open: true, session: '프리마켓', desc: '지정가 (현재가 -0.5%)' };
-                if (t >= 570 && t < 960) return { open: true, session: '정규장', desc: '시장가 (하한 -2%)' };
-                if (t >= 960 && t < 1200) return { open: true, session: '애프터마켓', desc: '지정가 (현재가 -0.5%)' };
+                if (t >= 240 && t < 570) return { open: true, session: '프리마켓', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
+                if (t >= 570 && t < 960) return { open: true, session: '정규장', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
+                if (t >= 960 && t < 1200) return { open: true, session: '애프터마켓', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
             }
             return { open: false, reason: '장 마감 시간' };
         }
@@ -1718,10 +1719,7 @@
             const curPrice = pos?.current_price || 0;
             const avgPrice = pos?.avg_price || 0;
             const rate = lastData?.exchange_rate || 1400;
-            const isRegularSession = (market.session === '정규장' || market.session === '미국장');
-            const sellPrice = isRegularSession
-                ? Math.round((curPrice * 0.98) * 100) / 100
-                : Math.round((curPrice * 0.995) * 100) / 100;
+            const sellPrice = Math.round((curPrice * (1 - SMART_SELL_INITIAL_DISCOUNT)) * 100) / 100;
             const estAmount = sellQty * sellPrice;
             const feeRate = Number(lastData?.sell_fee_rate || 0);
             const taxRate = Number(lastData?.sell_tax_rate || 0);
