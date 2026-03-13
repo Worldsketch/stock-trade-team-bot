@@ -277,9 +277,7 @@ class TradingBot:
             return
         prev_active: str = self.auto_active_mode
         should_defend: bool = False
-        total_equity: float = self.last_usd_balance
-        if not self.positions.empty:
-            total_equity += (self.positions['quantity'] * self.positions['current_price']).sum()
+        total_equity: float = self._calc_total_equity()
         if total_equity > 0:
             cash_ratio: float = self.last_usd_balance / total_equity
             if cash_ratio <= 0.35:
@@ -1273,7 +1271,8 @@ class TradingBot:
             if qty > 0 and is_buy_allowed:
                 if intraday_drop <= self.dca_2_threshold and not state['t2']:
                     w2_amt: float = total_equity * self.w2_ratio
-                    if self._place_calculated_order(symbol, price, w2_amt, "-3% DCA", buy_ratio=self.w2_ratio, prev_close=prev_close):
+                    reason_t2: str = f"-3% 물타기(전일종가 대비 {intraday_drop*100:.1f}%)"
+                    if self._place_calculated_order(symbol, price, w2_amt, reason_t2, buy_ratio=self.w2_ratio, prev_close=prev_close):
                         state['t2'] = True
                         self.daily_state[symbol] = state
                         self._save_daily_state()
@@ -1281,7 +1280,8 @@ class TradingBot:
                         
                 if intraday_drop <= self.dca_4_threshold and not state['t4']:
                     w4_amt: float = total_equity * self.w4_ratio
-                    if self._place_calculated_order(symbol, price, w4_amt, "-5% DCA", buy_ratio=self.w4_ratio, prev_close=prev_close):
+                    reason_t4: str = f"-5% 물타기(전일종가 대비 {intraday_drop*100:.1f}%)"
+                    if self._place_calculated_order(symbol, price, w4_amt, reason_t4, buy_ratio=self.w4_ratio, prev_close=prev_close):
                         state['t4'] = True
                         self.daily_state[symbol] = state
                         self._save_daily_state()
@@ -1289,7 +1289,8 @@ class TradingBot:
                         
                 if intraday_drop <= self.dca_8_threshold and not state['t8']:
                     w8_amt: float = total_equity * self.w8_ratio
-                    if self._place_calculated_order(symbol, price, w8_amt, "-7% DCA", buy_ratio=self.w8_ratio, prev_close=prev_close):
+                    reason_t8: str = f"-7% 물타기(전일종가 대비 {intraday_drop*100:.1f}%)"
+                    if self._place_calculated_order(symbol, price, w8_amt, reason_t8, buy_ratio=self.w8_ratio, prev_close=prev_close):
                         state['t8'] = True
                         self.daily_state[symbol] = state
                         self._save_daily_state()
@@ -1331,6 +1332,12 @@ class TradingBot:
             self.log("📊 [시작] 시장 데이터 초기 로딩 중...")
             self.check_trend_and_momentum()
             self.update_exchange_rate()
+        try:
+            # 재시작 직후에도 현재 포지션 기준으로 auto 모드를 즉시 반영
+            self.fetch_market_data()
+            self._check_auto_mode()
+        except Exception as e:
+            self.log(f"[초기 동기화 오류] {e}", send_tg=False)
 
         while self.is_running:
             try:
