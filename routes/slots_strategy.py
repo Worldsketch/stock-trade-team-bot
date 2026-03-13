@@ -223,6 +223,35 @@ def create_slots_strategy_router(
             invalidate_status_cache()
         return result
 
+    @router.post("/api/slots/reorder")
+    async def reorder_slots(request: Request, username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+        bot = get_bot()
+        if not bot:
+            return {"success": False, "message": "봇이 초기화되지 않았습니다."}
+        try:
+            body: Dict[str, Any] = await request.json()
+            symbols: List[str] = body.get("symbols", []) or []
+            if not isinstance(symbols, list):
+                return {"success": False, "message": "잘못된 요청입니다. (symbols 배열 필요)"}
+        except Exception:
+            return {"success": False, "message": "잘못된 요청입니다."}
+
+        current_symbols = set(bot.symbols)
+        request_symbols = {str(s).upper() for s in symbols if str(s).strip()}
+        if current_symbols != request_symbols:
+            return {"success": False, "message": "요청 순서가 현재 슬롯 구성과 일치하지 않습니다. 새로고침 후 다시 시도해주세요."}
+
+        ok: bool = bot.slot_manager.reorder_slots([str(s).upper() for s in symbols])
+        if not ok:
+            return {"success": False, "message": "슬롯 순서 저장에 실패했습니다."}
+
+        invalidate_status_cache()
+        return {
+            "success": True,
+            "message": "슬롯 순서가 저장되었습니다.",
+            "slots": bot.slot_manager.get_active_slots(),
+        }
+
     @router.get("/api/search-ticker")
     async def search_ticker(symbol: str = "", username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()

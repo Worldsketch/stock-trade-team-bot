@@ -58,6 +58,11 @@
         .currency-switch.krw .cs-indicator { transform: translateX(100%); }
         .currency-switch.usd .cs-indicator { transform: translateX(0); }
         .currency-seg { position: relative; z-index: 1; cursor: pointer; user-select: none; transition: color 0.3s ease; }
+        .position-card { user-select: none; }
+        .position-card.dragging { opacity: 0.55; border-style: dashed; }
+        .position-card.drag-over { outline: 2px solid rgba(52, 211, 153, 0.65); outline-offset: 2px; }
+        .position-drag-handle { cursor: grab; color: #64748b; }
+        .position-drag-handle:active { cursor: grabbing; }
     </style>
 </head>
 <body class="bg-slate-900 text-slate-200 min-h-screen font-sans antialiased">
@@ -550,6 +555,11 @@
         let _pollGeneration = 0;
         let _pollRiskUntil = 0;
         let _positionsRenderKey = '';
+        let _draggedSlotSymbol = '';
+        let _dragOverSlotSymbol = '';
+        let _slotsReorderInFlight = false;
+        let _pendingSlotReorderSymbols = null;
+        let _preferredSlotOrderSymbols = [];
         const POLL_STATUS_NORMAL_MS = 2500;
         const POLL_STATUS_RISK_MS = 6000;
         const POLL_STATUS_IDLE_MS = 15000;
@@ -1162,6 +1172,34 @@
             return '';
         }
 
+        function sortSlotsByOrder(slots, orderSymbols) {
+            if (!Array.isArray(slots)) return [];
+            if (!Array.isArray(orderSymbols) || orderSymbols.length === 0) return [...slots];
+            const orderMap = new Map(orderSymbols.map((sym, idx) => [String(sym).toUpperCase(), idx]));
+            return [...slots].sort((a, b) => {
+                const sa = String(a.symbol || '').toUpperCase();
+                const sb = String(b.symbol || '').toUpperCase();
+                const ia = orderMap.has(sa) ? orderMap.get(sa) : Number.MAX_SAFE_INTEGER;
+                const ib = orderMap.has(sb) ? orderMap.get(sb) : Number.MAX_SAFE_INTEGER;
+                if (ia !== ib) return ia - ib;
+                return sa.localeCompare(sb);
+            });
+        }
+
+        function sortPositionsBySlots(positions) {
+            if (!Array.isArray(positions)) return [];
+            if (!Array.isArray(currentSlots) || currentSlots.length === 0) return [...positions];
+            const orderMap = new Map(currentSlots.map((slot, idx) => [String(slot.symbol || '').toUpperCase(), idx]));
+            return [...positions].sort((a, b) => {
+                const sa = String(a.symbol || '').toUpperCase();
+                const sb = String(b.symbol || '').toUpperCase();
+                const ia = orderMap.has(sa) ? orderMap.get(sa) : Number.MAX_SAFE_INTEGER;
+                const ib = orderMap.has(sb) ? orderMap.get(sb) : Number.MAX_SAFE_INTEGER;
+                if (ia !== ib) return ia - ib;
+                return sa.localeCompare(sb);
+            });
+        }
+
         function fmtUsd(v) { return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}); }
         function fmtKrw(v) { return Math.round(v).toLocaleString() + '원'; }
         function retColor(v) { return v > 0 ? 'text-emerald-400' : (v < 0 ? 'text-rose-400' : 'text-slate-400'); }
@@ -1193,7 +1231,7 @@
             const iconBg = sc.bg || 'bg-slate-600';
             const abbr = getAbbr(pos.symbol);
             return `
-                <div class="bg-slate-850 rounded-xl p-5 border ${borderClass} ${glowClass} transition-all" data-position-symbol="${pos.symbol}">
+                <div class="position-card bg-slate-850 rounded-xl p-5 border ${borderClass} ${glowClass} transition-all" data-position-symbol="${pos.symbol}" draggable="true">
                     <div class="flex items-start justify-between mb-4">
                         <div class="flex items-center gap-3">
                             <div data-field="icon" class="w-10 h-10 rounded-full ${iconBg} flex items-center justify-center text-sm font-bold text-white shrink-0">${abbr}</div>
@@ -1202,7 +1240,12 @@
                                 <p data-field="base-asset" class="text-xs text-slate-500"></p>
                             </div>
                         </div>
-                        <span data-field="ret-badge" class="px-2.5 py-1 rounded-lg text-sm font-semibold">0.00%</span>
+                        <div class="flex items-center gap-2">
+                            <span data-field="ret-badge" class="px-2.5 py-1 rounded-lg text-sm font-semibold">0.00%</span>
+                            <span class="position-drag-handle text-xs" title="드래그하여 순서 변경">
+                                <i class="fa-solid fa-grip-vertical"></i>
+                            </span>
+                        </div>
                     </div>
                     <div class="flex justify-between items-center mb-4">
                         <span class="text-sm text-slate-400">평가금액</span>
@@ -1238,7 +1281,7 @@
             const plDisplay = showKrw ? fmtKrw(plUsd * rate) : fmtUsd(plUsd);
             const rateSign = isPos ? '+' : '';
 
-            card.className = `bg-slate-850 rounded-xl p-5 border ${borderClass} ${glowClass} transition-all`;
+            card.className = `position-card bg-slate-850 rounded-xl p-5 border ${borderClass} ${glowClass} transition-all`;
             const iconEl = card.querySelector('[data-field="icon"]');
             if (iconEl) {
                 iconEl.className = `w-10 h-10 rounded-full ${iconBg} flex items-center justify-center text-sm font-bold text-white shrink-0`;
@@ -1268,17 +1311,158 @@
             if (actionsEl) actionsEl.innerHTML = buildSellButtons(pos.symbol, pos.quantity);
         }
 
+        function clearDragVisual(grid) {
+            if (!grid) return;
+            grid.querySelectorAll('.position-card.dragging').forEach((el) => el.classList.remove('dragging'));
+            grid.querySelectorAll('.position-card.drag-over').forEach((el) => el.classList.remove('drag-over'));
+            _draggedSlotSymbol = '';
+            _dragOverSlotSymbol = '';
+        }
+
+        function readSlotOrderFromGrid(grid) {
+            return Array.from(grid.querySelectorAll('[data-position-symbol]'))
+                .map((card) => String(card.dataset.positionSymbol || '').toUpperCase())
+                .filter(Boolean);
+        }
+
+        function applyLocalSlotOrder(orderedSymbols) {
+            const ordered = sortSlotsByOrder(currentSlots, orderedSymbols);
+            currentSlots = ordered;
+            _preferredSlotOrderSymbols = ordered.map((s) => String(s.symbol || '').toUpperCase()).filter(Boolean);
+            buildChartButtons(currentSlots);
+            updateTradeSymbolFilter(currentSlots);
+        }
+
+        async function saveSlotReorder(symbols) {
+            const auth = getAuthHeader();
+            if (!auth) return false;
+            try {
+                const res = await fetch('/api/slots/reorder', {
+                    method: 'POST',
+                    headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols }),
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    showToast(data.message || '슬롯 순서 저장 실패', true);
+                    return false;
+                }
+                if (Array.isArray(data.slots)) {
+                    currentSlots = data.slots;
+                    _preferredSlotOrderSymbols = currentSlots.map((s) => String(s.symbol || '').toUpperCase()).filter(Boolean);
+                    buildChartButtons(currentSlots);
+                }
+                return true;
+            } catch (_) {
+                showToast('슬롯 순서 저장 실패', true);
+                return false;
+            }
+        }
+
+        async function flushSlotReorderQueue() {
+            if (_slotsReorderInFlight) return;
+            if (!_pendingSlotReorderSymbols || _pendingSlotReorderSymbols.length === 0) return;
+            const symbols = _pendingSlotReorderSymbols;
+            _pendingSlotReorderSymbols = null;
+            _slotsReorderInFlight = true;
+            const ok = await saveSlotReorder(symbols);
+            _slotsReorderInFlight = false;
+            if (!ok) fetchStatus();
+            if (_pendingSlotReorderSymbols && _pendingSlotReorderSymbols.join('|') !== symbols.join('|')) {
+                flushSlotReorderQueue();
+            }
+        }
+
+        function queueSlotReorder(symbols) {
+            _pendingSlotReorderSymbols = symbols;
+            flushSlotReorderQueue();
+        }
+
+        function setupPositionDragAndDrop(grid) {
+            if (!grid || grid.dataset.dragBound === '1') return;
+            grid.dataset.dragBound = '1';
+
+            grid.addEventListener('dragstart', (e) => {
+                const card = e.target.closest('[data-position-symbol]');
+                if (!card) return;
+                const symbol = String(card.dataset.positionSymbol || '').toUpperCase();
+                if (!symbol) return;
+                _draggedSlotSymbol = symbol;
+                card.classList.add('dragging');
+                if (e.dataTransfer) {
+                    e.dataTransfer.effectAllowed = 'move';
+                    try { e.dataTransfer.setData('text/plain', symbol); } catch (_) {}
+                }
+            });
+
+            grid.addEventListener('dragover', (e) => {
+                if (!_draggedSlotSymbol) return;
+                const target = e.target.closest('[data-position-symbol]');
+                if (!target) return;
+                const targetSymbol = String(target.dataset.positionSymbol || '').toUpperCase();
+                if (!targetSymbol || targetSymbol === _draggedSlotSymbol) return;
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                if (_dragOverSlotSymbol !== targetSymbol) {
+                    grid.querySelectorAll('.position-card.drag-over').forEach((el) => el.classList.remove('drag-over'));
+                    target.classList.add('drag-over');
+                    _dragOverSlotSymbol = targetSymbol;
+                }
+            });
+
+            grid.addEventListener('drop', (e) => {
+                if (!_draggedSlotSymbol) return;
+                const target = e.target.closest('[data-position-symbol]');
+                const dragged = grid.querySelector(`[data-position-symbol="${_draggedSlotSymbol}"]`);
+                if (!target || !dragged) {
+                    clearDragVisual(grid);
+                    return;
+                }
+                const targetSymbol = String(target.dataset.positionSymbol || '').toUpperCase();
+                if (!targetSymbol || targetSymbol === _draggedSlotSymbol) {
+                    clearDragVisual(grid);
+                    return;
+                }
+                e.preventDefault();
+                const cards = Array.from(grid.querySelectorAll('[data-position-symbol]'));
+                const draggedIdx = cards.indexOf(dragged);
+                const targetIdx = cards.indexOf(target);
+                if (draggedIdx < 0 || targetIdx < 0) {
+                    clearDragVisual(grid);
+                    return;
+                }
+                if (draggedIdx < targetIdx) {
+                    grid.insertBefore(dragged, target.nextSibling);
+                } else {
+                    grid.insertBefore(dragged, target);
+                }
+                clearDragVisual(grid);
+                const orderedSymbols = readSlotOrderFromGrid(grid);
+                if (orderedSymbols.length > 0) {
+                    applyLocalSlotOrder(orderedSymbols);
+                    queueSlotReorder(orderedSymbols);
+                }
+            });
+
+            grid.addEventListener('dragend', () => clearDragVisual(grid));
+        }
+
         function renderPositionCards(container, positions, rate) {
-            const key = positions.map(p => p.symbol).join('|');
+            const sortedPositions = sortPositionsBySlots(positions);
+            const key = sortedPositions.map(p => p.symbol).join('|');
             if (!container.querySelector('.positions-grid') || _positionsRenderKey !== key) {
                 container.innerHTML = '<div class="grid grid-cols-1 md:grid-cols-3 gap-4 positions-grid"></div>';
                 const grid = container.querySelector('.positions-grid');
-                positions.forEach(pos => {
+                sortedPositions.forEach(pos => {
                     grid.insertAdjacentHTML('beforeend', buildPositionCardSkeleton(pos));
                 });
+                setupPositionDragAndDrop(grid);
                 _positionsRenderKey = key;
+            } else {
+                const grid = container.querySelector('.positions-grid');
+                setupPositionDragAndDrop(grid);
             }
-            positions.forEach(pos => {
+            sortedPositions.forEach(pos => {
                 const card = container.querySelector(`[data-position-symbol="${pos.symbol}"]`);
                 if (card) updatePositionCard(card, pos, rate);
             });
@@ -1287,7 +1471,14 @@
         function updateUI(data) {
             if (data.slots) {
                 const prevLen = currentSlots.length;
-                currentSlots = data.slots;
+                let nextSlots = data.slots;
+                if (_preferredSlotOrderSymbols.length > 0) {
+                    nextSlots = sortSlotsByOrder(nextSlots, _preferredSlotOrderSymbols);
+                }
+                currentSlots = nextSlots;
+                if (!_slotsReorderInFlight) {
+                    _preferredSlotOrderSymbols = currentSlots.map((s) => String(s.symbol || '').toUpperCase()).filter(Boolean);
+                }
                 maxSlots = data.max_slots || 6;
                 document.getElementById('slotCount').textContent = currentSlots.length;
                 document.getElementById('slotMax').textContent = maxSlots;

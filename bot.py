@@ -88,6 +88,45 @@ class SlotManager:
         self._save()
         return True
 
+    def reorder_slots(self, ordered_symbols: List[str]) -> bool:
+        """활성 슬롯 순서를 사용자가 지정한 심볼 순서로 재배열합니다."""
+        if not ordered_symbols:
+            return False
+        normalized_order: List[str] = []
+        seen: Set[str] = set()
+        for sym in ordered_symbols:
+            upper = str(sym).upper()
+            if not upper or upper in seen:
+                continue
+            normalized_order.append(upper)
+            seen.add(upper)
+        if not normalized_order:
+            return False
+
+        active_slots: List[Dict[str, Any]] = self.get_active_slots()
+        active_map: Dict[str, Dict[str, Any]] = {s['symbol']: s for s in active_slots if s.get('symbol')}
+        if not active_map:
+            return False
+
+        reordered_active: List[Dict[str, Any]] = []
+        used: Set[str] = set()
+        for sym in normalized_order:
+            slot = active_map.get(sym)
+            if not slot or sym in used:
+                continue
+            reordered_active.append(slot)
+            used.add(sym)
+        for slot in active_slots:
+            sym = str(slot.get('symbol', '')).upper()
+            if sym and sym not in used:
+                reordered_active.append(slot)
+                used.add(sym)
+
+        inactive_slots: List[Dict[str, Any]] = [s for s in self.slots if not s.get('active', True)]
+        self.slots = reordered_active + inactive_slots
+        self._save()
+        return True
+
 
 class TradingBot:
     def __init__(self, api: KoreaInvestmentAPI) -> None:
