@@ -491,7 +491,7 @@ class TradingBot:
             print(f"[자동 등록 오류] {e}")
 
     def add_symbol(self, symbol: str, buy_percent: float = 0.0) -> Dict[str, Any]:
-        """슬롯에 종목을 추가합니다. buy_percent > 0이면 총자산 대비 해당 비율만큼 매수."""
+        """슬롯에 종목을 추가합니다. buy_percent > 0이면 예수금 대비 해당 비율만큼 매수."""
         symbol = symbol.upper().strip()
         now_et: datetime = datetime.now(ZoneInfo("America/New_York"))
         now_kst: datetime = now_et.astimezone(ZoneInfo("Asia/Seoul"))
@@ -553,11 +553,17 @@ class TradingBot:
             try:
                 if not bal_data:
                     bal_data = self.api.get_balance_and_positions(symbols=self.symbols + [symbol])
-                total_assets: float = bal_data.get("usd_balance", 0.0) + bal_data.get("tot_stck_evlu", 0.0)
-                buy_amount: float = total_assets * (buy_percent / 100.0)
+                available_cash: float = float(bal_data.get("usd_balance", 0.0) or 0.0)
+                buy_amount: float = available_cash * (buy_percent / 100.0)
                 buy_qty = int(buy_amount / current_price)
                 if buy_qty < 1:
-                    return {"success": False, "message": f"{symbol} 매수 금액(${buy_amount:.0f})이 1주 가격(${current_price:.2f})보다 적습니다."}
+                    return {
+                        "success": False,
+                        "message": (
+                            f"{symbol} 매수 금액(${buy_amount:.0f}, 예수금 ${available_cash:,.2f}의 {buy_percent:.1f}%)이 "
+                            f"1주 가격(${current_price:.2f})보다 적습니다."
+                        ),
+                    }
             except Exception as e:
                 return {"success": False, "message": f"매수 수량 계산 실패: {e}"}
 
