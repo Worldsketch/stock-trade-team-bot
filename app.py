@@ -448,12 +448,16 @@ def _generate_ai_report() -> Dict[str, Any]:
 - 본 분석은 기술적 지표 기반 참고자료임을 마지막에 한 줄로 명시"""
 
     try:
-        url: str = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key={gemini_key}"
+        url: str = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
+        headers: Dict[str, str] = {
+            "x-goog-api-key": gemini_key,
+            "Content-Type": "application/json",
+        }
         payload: Dict[str, Any] = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.5, "maxOutputTokens": 8192}
         }
-        resp = req.post(url, json=payload, timeout=120)
+        resp = req.post(url, headers=headers, json=payload, timeout=120)
         resp.raise_for_status()
         result = resp.json()
         candidates = result.get("candidates", [])
@@ -489,7 +493,10 @@ def _generate_ai_report() -> Dict[str, Any]:
 
         return report
     except Exception as e:
-        return {"error": f"Gemini API 호출 실패: {e}"}
+        # 예외 원문(URL 포함 가능)을 사용자 응답에 직접 노출하지 않음
+        if bot_instance:
+            bot_instance.log(f"[Gemini API 호출 실패] {type(e).__name__}", send_tg=False)
+        return {"error": "Gemini API 호출 실패 (관리자 로그 확인 필요)"}
 
 
 def _is_us_dst() -> bool:
