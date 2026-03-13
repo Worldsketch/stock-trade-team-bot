@@ -5,7 +5,7 @@ import time
 import threading
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Tuple
 import exchange_calendars as xcals
 import yfinance as yf
 import json
@@ -145,6 +145,8 @@ class TradingBot:
         # 장중 SMA200 재체크 간격 (초)
         self._sma_recheck_interval: float = 300.0
         self._last_sma_recheck: float = 0.0
+        self._daily_closes_cache: Dict[str, Dict[str, Any]] = {}
+        self._daily_closes_cache_ttl_sec: float = 300.0
         
         # 수동 매도 후 매수 차단 (타임스탬프)
         self.manual_sell_block: Dict[str, float] = {}
@@ -219,6 +221,67 @@ class TradingBot:
         except Exception:
             pass
         return None
+
+    def _get_kis_daily_closes(self, symbol: str, min_points: int = 1, force_refresh: bool = False) -> List[float]:
+        symbol = symbol.upper().strip()
+        now: float = time.time()
+        cached: Optional[Dict[str, Any]] = self._daily_closes_cache.get(symbol)
+        if (
+            cached
+            and (not force_refresh)
+            and (now - float(cached.get("ts", 0.0))) < self._daily_closes_cache_ttl_sec
+            and len(cached.get("closes", [])) >= min_points
+        ):
+            return list(cached.get("closes", []))
+
+        periods: List[str] = ["2y", "1y"] if min_points >= 200 else ["1y", "2y"]
+        closes: List[float] = []
+        for period in periods:
+            candles: List[Dict[str, Any]] = self.api.get_daily_candles(symbol, period=period)
+            closes = [float(c.get("close", 0.0)) for c in candles if float(c.get("close", 0.0)) > 0]
+            if len(closes) >= min_points or period == periods[-1]:
+                break
+
+        if closes:
+            self._daily_closes_cache[symbol] = {"closes": closes, "ts": now}
+        return closes
+
+    def _compute_sma200_rsi14(self, closes: List[float]) -> Optional[Tuple[float, float]]:
+        if len(closes) < 200:
+            return None
+        close_ser: pd.Series = pd.Series(closes, dtype=float)
+        sma_200: float = float(close_ser.tail(200).mean())
+        delta: pd.Series = close_ser.diff()
+        gain: pd.Series = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
+        loss_raw: pd.Series = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
+        loss_safe: pd.Series = loss_raw.replace(0.0, 1e-10)
+        rs: pd.Series = gain / loss_safe
+        rsi_14: float = float((100 - (100 / (1 + rs))).iloc[-1])
+        if pd.isna(rsi_14):
+            rsi_14 = 50.0
+        return sma_200, rsi_14
+
+    def _get_trend_snapshot_from_kis(self, base_symbol: str, force_refresh: bool = False) -> Optional[Dict[str, float]]:
+        closes: List[float] = self._get_kis_daily_closes(base_symbol, min_points=200, force_refresh=force_refresh)
+        indicator = self._compute_sma200_rsi14(closes)
+        if not indicator:
+            return None
+        sma_200, rsi_14 = indicator
+        current_price: float = self.api.get_current_price(base_symbol)
+        if current_price <= 0:
+            current_price = closes[-1]
+        return {
+            "sma_200": sma_200,
+            "rsi_14": rsi_14,
+            "current_price": current_price,
+        }
+
+    def _update_prev_close_from_kis(self, symbol: str, force_refresh: bool = False) -> None:
+        closes: List[float] = self._get_kis_daily_closes(symbol, min_points=2, force_refresh=force_refresh)
+        if len(closes) >= 2:
+            self.prev_close[symbol] = closes[-2]
+        elif len(closes) == 1:
+            self.prev_close[symbol] = closes[-1]
 
     def _load_daily_state(self) -> Dict[str, Any]:
         """재시작 시 중복 매수를 방지하기 위해 파일에서 daily_state를 복원합니다."""
@@ -380,14 +443,7 @@ class TradingBot:
         if self.slot_manager.has_symbol(symbol):
             return {"success": False, "message": f"{symbol}은(는) 이미 추가된 종목입니다."}
 
-        try:
-            ticker = yf.Ticker(symbol)
-            info: Dict[str, Any] = ticker.info
-            name: str = info.get('shortName', info.get('longName', symbol))
-            if not info.get('regularMarketPrice') and not info.get('previousClose'):
-                return {"success": False, "message": f"{symbol} 종목 정보를 찾을 수 없습니다."}
-        except Exception as e:
-            return {"success": False, "message": f"{symbol} 종목 검증 실패: {e}"}
+        name: str = symbol
 
         is_leveraged: bool = symbol in LEVERAGED_ETF_MAP
         base_asset: str = LEVERAGED_ETF_MAP.get(symbol, symbol)
@@ -528,37 +584,19 @@ class TradingBot:
         """단일 종목의 SMA200 및 RSI를 확인합니다."""
         base_sym: str = self.base_assets.get(symbol, symbol)
         try:
-            ticker = yf.Ticker(base_sym)
-            hist: pd.DataFrame = ticker.history(period="1y")
-            if len(hist) < 200:
+            snapshot = self._get_trend_snapshot_from_kis(base_sym, force_refresh=True)
+            if not snapshot:
                 self.is_uptrend[symbol] = False
                 self.is_rsi_oversold[symbol] = False
                 return
-
-            sma_200: float = float(hist['Close'].tail(200).mean())
-            current_price: float = float(hist['Close'].iloc[-1])
-            delta: pd.Series = hist['Close'].diff()
-            gain: pd.Series = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
-            loss_raw: pd.Series = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
-            loss_safe: pd.Series = loss_raw.replace(0.0, 1e-10)
-            rs: pd.Series = gain / loss_safe
-            current_rsi: float = float((100 - (100 / (1 + rs))).iloc[-1])
-            if pd.isna(current_rsi):
-                current_rsi = 50.0
-
-            self.is_uptrend[symbol] = current_price > sma_200
-            self.is_rsi_oversold[symbol] = current_rsi < 30.0
+            self.is_uptrend[symbol] = snapshot["current_price"] > snapshot["sma_200"]
+            self.is_rsi_oversold[symbol] = snapshot["rsi_14"] < 30.0
         except Exception:
             self.is_uptrend[symbol] = False
             self.is_rsi_oversold[symbol] = False
 
         try:
-            etf_ticker = yf.Ticker(symbol)
-            etf_hist: pd.DataFrame = etf_ticker.history(period="5d")
-            if len(etf_hist) >= 2:
-                self.prev_close[symbol] = float(etf_hist['Close'].iloc[-2])
-            elif len(etf_hist) == 1:
-                self.prev_close[symbol] = float(etf_hist['Close'].iloc[-1])
+            self._update_prev_close_from_kis(symbol, force_refresh=True)
         except Exception:
             pass
 
@@ -612,29 +650,15 @@ class TradingBot:
         self.log("📊 [추세 판단] 기초 자산 200일 SMA 및 14일 RSI 확인 중...")
         for etf_sym, base_sym in self.base_assets.items():
             try:
-                ticker = yf.Ticker(base_sym)
-                hist = ticker.history(period="1y")
-                if len(hist) < 200:
+                snapshot = self._get_trend_snapshot_from_kis(base_sym, force_refresh=True)
+                if not snapshot:
                     self.log(f"⚠️ [{base_sym}] 데이터 부족. (매수 불가 처리)")
                     self.is_uptrend[etf_sym] = False
                     self.is_rsi_oversold[etf_sym] = False
                     continue
-                
-                sma_200: float = float(hist['Close'].tail(200).mean())
-                current_price: float = float(hist['Close'].iloc[-1])
-                
-                delta: pd.Series = hist['Close'].diff()
-                gain: pd.Series = delta.where(delta > 0, 0.0)
-                loss: pd.Series = -delta.where(delta < 0, 0.0)
-                avg_gain: pd.Series = gain.ewm(alpha=1/14, adjust=False).mean()
-                avg_loss: pd.Series = loss.ewm(alpha=1/14, adjust=False).mean()
-                avg_loss_safe: pd.Series = avg_loss.replace(0.0, 1e-10)
-                rs: pd.Series = avg_gain / avg_loss_safe
-                rsi_14: pd.Series = 100 - (100 / (1 + rs))
-                current_rsi: float = float(rsi_14.iloc[-1])
-                if pd.isna(current_rsi):
-                    current_rsi = 50.0
-                
+                sma_200: float = snapshot["sma_200"]
+                current_price: float = snapshot["current_price"]
+                current_rsi: float = snapshot["rsi_14"]
                 is_up: bool = current_price > sma_200
                 is_oversold: bool = current_rsi < 30.0
                 
@@ -654,13 +678,9 @@ class TradingBot:
         
         for etf_sym in self.symbols:
             try:
-                etf_ticker = yf.Ticker(etf_sym)
-                etf_hist = etf_ticker.history(period="5d")
-                if len(etf_hist) >= 2:
-                    self.prev_close[etf_sym] = float(etf_hist['Close'].iloc[-2])
-                elif len(etf_hist) == 1:
-                    self.prev_close[etf_sym] = float(etf_hist['Close'].iloc[-1])
-                self.log(f"📌 [{etf_sym}] 전일종가: ${self.prev_close[etf_sym]:.2f}", send_tg=False)
+                self._update_prev_close_from_kis(etf_sym, force_refresh=True)
+                if self.prev_close.get(etf_sym, 0.0) > 0:
+                    self.log(f"📌 [{etf_sym}] 전일종가: ${self.prev_close[etf_sym]:.2f}", send_tg=False)
             except Exception as e:
                 self.log(f"⚠️ [{etf_sym}] 전일종가 조회 실패: {e}")
 
@@ -673,12 +693,11 @@ class TradingBot:
 
         for etf_sym, base_sym in self.base_assets.items():
             try:
-                ticker = yf.Ticker(base_sym)
-                hist: pd.DataFrame = ticker.history(period="1y")
-                if len(hist) < 200:
+                snapshot = self._get_trend_snapshot_from_kis(base_sym, force_refresh=False)
+                if not snapshot:
                     continue
-                sma_200: float = float(hist['Close'].tail(200).mean())
-                current_price: float = float(hist['Close'].iloc[-1])
+                sma_200: float = snapshot["sma_200"]
+                current_price: float = snapshot["current_price"]
                 was_up: bool = self.is_uptrend.get(etf_sym, False)
                 is_up: bool = current_price > sma_200
 
@@ -920,28 +939,15 @@ class TradingBot:
 
         for etf_sym, base_sym in self.base_assets.items():
             try:
-                ticker = yf.Ticker(base_sym)
-                hist = ticker.history(period="1y")
-                if len(hist) < 200:
+                snapshot = self._get_trend_snapshot_from_kis(base_sym, force_refresh=True)
+                if not snapshot:
                     self.log(f"⚠️ [{base_sym}] 데이터 부족. (매수 불가 처리)")
                     self.is_uptrend[etf_sym] = False
                     continue
 
-                sma_200: float = float(hist['Close'].tail(200).mean())
-                realtime_price: float = self.api.get_current_price(base_sym)
-
-                if realtime_price <= 0:
-                    realtime_price = float(hist['Close'].iloc[-1])
-                    self.log(f"⚠️ [{base_sym}] 실시간 가격 조회 실패, 전일종가 사용: ${realtime_price:.2f}")
-
-                delta: pd.Series = hist['Close'].diff()
-                gain: pd.Series = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
-                loss_raw: pd.Series = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
-                loss_safe: pd.Series = loss_raw.replace(0.0, 1e-10)
-                rs: pd.Series = gain / loss_safe
-                current_rsi: float = float((100 - (100 / (1 + rs))).iloc[-1])
-                if pd.isna(current_rsi):
-                    current_rsi = 50.0
+                sma_200: float = snapshot["sma_200"]
+                realtime_price: float = snapshot["current_price"]
+                current_rsi: float = snapshot["rsi_14"]
                 is_oversold: bool = current_rsi < 30.0
                 self.is_rsi_oversold[etf_sym] = is_oversold
 

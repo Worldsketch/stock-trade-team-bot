@@ -171,33 +171,33 @@ async def get_strategy_params(username: str = Depends(get_current_username)) -> 
         base_price = {}
         base_sma200 = {}
         etf_current_price = {}
-        try:
-            import yfinance as yf
-            for etf_sym, base_sym in bot_instance.base_assets.items():
-                ticker = yf.Ticker(base_sym)
-                hist = ticker.history(period="1y")
-                if len(hist) >= 200:
-                    base_sma200[etf_sym] = float(hist['Close'].tail(200).mean())
+        for etf_sym, base_sym in bot_instance.base_assets.items():
+            try:
+                snapshot: Optional[Dict[str, float]] = bot_instance._get_trend_snapshot_from_kis(base_sym, force_refresh=False)
+                if snapshot:
+                    base_sma200[etf_sym] = float(snapshot["sma_200"])
+                    base_price[etf_sym] = float(snapshot["current_price"])
+            except Exception:
+                pass
 
-                    realtime_base: float = bot_instance.api.get_current_price(base_sym)
-                    base_price[etf_sym] = realtime_base if realtime_base > 0 else float(hist['Close'].iloc[-1])
-
+            try:
                 realtime_etf: float = bot_instance.api.get_current_price(etf_sym)
                 if realtime_etf > 0:
                     etf_current_price[etf_sym] = realtime_etf
                 else:
-                    etf_ticker = yf.Ticker(etf_sym)
-                    etf_hist = etf_ticker.history(period="5d")
-                    if len(etf_hist) >= 1:
-                        etf_current_price[etf_sym] = float(etf_hist['Close'].iloc[-1])
+                    closes = bot_instance._get_kis_daily_closes(etf_sym, min_points=1, force_refresh=False)
+                    if closes:
+                        etf_current_price[etf_sym] = float(closes[-1])
+            except Exception:
+                pass
 
-                if all(v == 0.0 for v in prev_close.values()):
-                    etf_ticker = yf.Ticker(etf_sym)
-                    etf_hist_pc = etf_ticker.history(period="5d")
-                    if len(etf_hist_pc) >= 2:
-                        prev_close[etf_sym] = float(etf_hist_pc['Close'].iloc[-2])
-        except Exception:
-            pass
+            if prev_close.get(etf_sym, 0.0) <= 0:
+                try:
+                    bot_instance._update_prev_close_from_kis(etf_sym, force_refresh=False)
+                    if bot_instance.prev_close.get(etf_sym, 0.0) > 0:
+                        prev_close[etf_sym] = float(bot_instance.prev_close[etf_sym])
+                except Exception:
+                    pass
         _strategy_cache = {"market": {"base_price": base_price, "base_sma200": base_sma200, "etf_current_price": etf_current_price, "prev_close": prev_close}, "ts": now}
 
     return {
