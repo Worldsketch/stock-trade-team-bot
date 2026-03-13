@@ -33,7 +33,7 @@ def create_chart_router(
 
         cache_key: str = f"{symbol}_{period}_{interval}"
         now: float = time.time()
-        ttl: float = 30.0 if interval in ("1m", "5m") else 300.0
+        ttl: float = 15.0 if interval == "1m" else (60.0 if interval == "5m" else 300.0)
         cached = chart_cache.get(cache_key)
         if cached and (now - cached["ts"]) < ttl:
             return cached["data"]
@@ -87,11 +87,12 @@ def create_chart_router(
                 with open(trade_file, "r", encoding="utf-8") as file:
                     all_trades = json.load(file)
                 for trade in all_trades:
-                    if trade.get("symbol") == symbol:
+                    side: str = str(trade.get("side", ""))
+                    if trade.get("symbol") == symbol and side in ("매수", "매도"):
                         trades.append(
                             {
                                 "time": trade.get("timestamp", ""),
-                                "side": trade.get("side", ""),
+                                "side": side,
                                 "price": trade.get("price", 0),
                                 "qty": trade.get("qty", 0),
                             }

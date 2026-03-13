@@ -642,6 +642,7 @@
                     const firstTime = data.candles[0].time;
                     const lastTime = data.candles[data.candles.length - 1].time;
                     data.trades.forEach(t => {
+                        if (t.side !== '매수' && t.side !== '매도') return;
                         const d = new Date(t.time);
                         const ts = Math.floor(d.getTime() / 1000);
                         if (ts >= firstTime && ts <= lastTime) {
@@ -1329,9 +1330,10 @@
                     prevDate = date;
                 }
                 const isBuy = t.side === '매수';
-                const sideColor = isBuy ? 'text-emerald-400' : 'text-rose-400';
-                const sideBg = isBuy ? 'bg-emerald-500/10' : 'bg-rose-500/10';
-                const sideIcon = isBuy ? 'fa-arrow-down' : 'fa-arrow-up';
+                const isSell = t.side === '매도';
+                const sideColor = isBuy ? 'text-emerald-400' : (isSell ? 'text-rose-400' : 'text-slate-300');
+                const sideBg = isBuy ? 'bg-emerald-500/10' : (isSell ? 'bg-rose-500/10' : 'bg-slate-500/10');
+                const sideIcon = isBuy ? 'fa-arrow-down' : (isSell ? 'fa-arrow-up' : 'fa-ban');
                 const amtDisplay = showKrw ? fmtKrw(t.amount * rate) : fmtUsd(t.amount);
                 const time = t.timestamp.split(' ')[1] || '';
 
@@ -1353,7 +1355,7 @@
                     <div class="text-right">
                         <p class="text-sm font-semibold text-white">${amtDisplay}</p>
                         <p class="text-xs text-slate-500">${t.qty}주 @ $${t.price}</p>
-                        ${!isBuy && t.pnl !== undefined ? `<p class="text-xs font-semibold mt-0.5 ${t.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${t.pnl >= 0 ? '+' : ''}${showKrw ? fmtKrw(t.pnl * rate) : fmtUsd(t.pnl)} (${t.pnl_pct >= 0 ? '+' : ''}${t.pnl_pct.toFixed(1)}%)</p>` : ''}
+                        ${isSell && t.pnl !== undefined ? `<p class="text-xs font-semibold mt-0.5 ${t.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${t.pnl >= 0 ? '+' : ''}${showKrw ? fmtKrw(t.pnl * rate) : fmtUsd(t.pnl)} (${t.pnl_pct >= 0 ? '+' : ''}${t.pnl_pct.toFixed(1)}%)</p>` : ''}
                         <p class="text-[10px] text-slate-600">${time}</p>
                     </div>
                 </div>`;
@@ -1951,7 +1953,7 @@
         fetchAiReport();
         setInterval(fetchStatus, 3000);
         setInterval(fetchPendingOrders, 10000);
-        setInterval(() => { if (currentChartSymbol) loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval); }, 30000);
+        setInterval(() => { if (currentChartSymbol) loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval); }, 60000);
     </script>
 
     <footer class="text-center py-8 space-y-1">

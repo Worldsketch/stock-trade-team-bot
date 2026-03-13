@@ -159,7 +159,7 @@ class KoreaInvestmentAPI:
                 "CTX_AREA_FK200": "",
                 "CTX_AREA_NK200": ""
             }
-            res = requests.get(url, headers=headers, params=params)
+            res = requests.get(url, headers=headers, params=params, timeout=4)
             res.raise_for_status()
             
             try:
@@ -384,7 +384,7 @@ class KoreaInvestmentAPI:
             "FILL": "",
             "KEYB": "",
         }
-        res = requests.get(url, headers=headers, params=params)
+        res = requests.get(url, headers=headers, params=params, timeout=6)
         res.raise_for_status()
         data = res.json()
         if data.get("rt_cd") != "0":

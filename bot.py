@@ -845,6 +845,59 @@ class TradingBot:
         except Exception as e:
             print(f"[매매기록 저장 오류] {e}")
 
+    def mark_trade_cancelled(self, symbol: str, cancelled_qty: int, order_no: str = "") -> bool:
+        """최근 매수 주문 로그를 매수취소로 정정합니다."""
+        if cancelled_qty <= 0:
+            return False
+        try:
+            if not os.path.exists(self.trade_log_file):
+                return False
+            with open(self.trade_log_file, 'r', encoding='utf-8') as f:
+                log: List[Dict[str, Any]] = json.load(f)
+            if not isinstance(log, list) or not log:
+                return False
+
+            target_idx: int = -1
+            for i in range(len(log) - 1, -1, -1):
+                entry: Dict[str, Any] = log[i]
+                if entry.get("symbol") != symbol:
+                    continue
+                if entry.get("side") != "매수":
+                    continue
+                if entry.get("status") in ("cancelled", "partially_cancelled"):
+                    continue
+                target_idx = i
+                break
+
+            if target_idx < 0:
+                return False
+
+            entry = log[target_idx]
+            entry_qty: int = int(float(entry.get("qty", 0)))
+            if entry_qty <= 0:
+                return False
+
+            now_kst: str = datetime.now(ZoneInfo("Asia/Seoul")).strftime('%Y-%m-%d %H:%M:%S')
+            is_full_cancel: bool = cancelled_qty >= entry_qty
+            entry["status"] = "cancelled" if is_full_cancel else "partially_cancelled"
+            entry["cancelled_qty"] = int(min(cancelled_qty, entry_qty))
+            entry["cancelled_at"] = now_kst
+            if order_no:
+                entry["cancel_order_no"] = order_no
+            base_reason: str = str(entry.get("reason", "")).strip()
+            if "취소" not in base_reason:
+                entry["reason"] = f"{base_reason} [주문취소]".strip()
+            if is_full_cancel:
+                entry["side"] = "매수취소"
+                entry["amount"] = 0.0
+
+            with open(self.trade_log_file, 'w', encoding='utf-8') as f:
+                json.dump(log, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"[매매취소 반영 오류] {e}")
+            return False
+
     def _send_premarket_briefing(self) -> None:
         try:
             self.sync_positions()

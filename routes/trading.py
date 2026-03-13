@@ -144,7 +144,10 @@ def create_trading_router(
                 prefer_daytime=bot.is_daytime_market_open(now_kst),
             )
             if success:
+                cancelled_sync: bool = bot.mark_trade_cancelled(symbol, remaining_qty, order_no=order_no)
                 bot.log(f"🚫 [주문취소] {symbol} 주문번호 {order_no}")
+                if cancelled_sync:
+                    bot.log(f"🧾 [매매내역 정정] {symbol} 최근 매수 기록에 취소 반영", send_tg=False)
                 return {"success": True, "message": f"{symbol} 주문 취소 완료"}
             return {"success": False, "message": f"{symbol} 주문 취소 실패"}
         except Exception as error:
