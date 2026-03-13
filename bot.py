@@ -146,7 +146,7 @@ class TradingBot:
         self._sma_recheck_interval: float = 300.0
         self._last_sma_recheck: float = 0.0
         self._daily_closes_cache: Dict[str, Dict[str, Any]] = {}
-        self._daily_closes_cache_ttl_sec: float = 300.0
+        self._daily_closes_cache_ttl_sec: float = 1800.0
         
         # 수동 매도 후 매수 차단 (타임스탬프)
         self.manual_sell_block: Dict[str, float] = {}

@@ -1,7 +1,7 @@
 import os
 import time
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import requests
 from typing import Dict, Any, Optional, List, Tuple
@@ -437,27 +437,96 @@ class KoreaInvestmentAPI:
         headers: Dict[str, str] = self.get_headers("HHDFS76240000")
         short_excd: str = self._get_exchange_code(symbol, "short")
         now_et = datetime.now(ZoneInfo("America/New_York"))
-        bymd = now_et.strftime("%Y%m%d")
-        params: Dict[str, str] = {
-            "AUTH": "",
-            "EXCD": short_excd,
-            "SYMB": symbol,
-            "GUBN": "0",
-            "BYMD": bymd,
-            "MODP": "0",
+        keep_days_map: Dict[str, int] = {
+            "1mo": 31,
+            "3mo": 92,
+            "6mo": 184,
+            "1y": 366,
+            "2y": 731,
         }
-        res = requests.get(url, headers=headers, params=params, timeout=(2.0, 5.0))
-        res.raise_for_status()
-        data = res.json()
-        if data.get("rt_cd") != "0":
-            msg = data.get("msg1", "Unknown")
-            raise Exception(f"일봉 조회 실패({short_excd}): {msg}")
+        keep_days: int = keep_days_map.get(period, 366)
 
-        rows: List[Dict[str, Any]] = data.get("output2", [])
-        if not rows and isinstance(data.get("output1"), list):
-            rows = data.get("output1", [])
-        if not rows and isinstance(data.get("output"), list):
-            rows = data.get("output", [])
+        max_batches_map: Dict[str, int] = {
+            "1mo": 1,
+            "3mo": 2,
+            "6mo": 3,
+            "1y": 5,
+            "2y": 8,
+        }
+        max_batches: int = max_batches_map.get(period, 5)
+        target_rows_map: Dict[str, int] = {
+            "1mo": 20,
+            "3mo": 60,
+            "6mo": 120,
+            "1y": 200,
+            "2y": 400,
+        }
+        target_rows: int = target_rows_map.get(period, 200)
+        cutoff_date = (now_et - timedelta(days=keep_days + 7)).date()
+
+        all_rows: List[Dict[str, Any]] = []
+        seen_dates: set = set()
+        cursor_date = now_et.date()
+        empty_streak: int = 0
+
+        for _ in range(max_batches):
+            params: Dict[str, str] = {
+                "AUTH": "",
+                "EXCD": short_excd,
+                "SYMB": symbol,
+                "GUBN": "0",
+                "BYMD": cursor_date.strftime("%Y%m%d"),
+                "MODP": "0",
+            }
+            res = requests.get(url, headers=headers, params=params, timeout=(2.0, 5.0))
+            res.raise_for_status()
+            data = res.json()
+            if data.get("rt_cd") != "0":
+                msg = data.get("msg1", "Unknown")
+                raise Exception(f"일봉 조회 실패({short_excd}): {msg}")
+
+            rows: List[Dict[str, Any]] = data.get("output2", [])
+            if not rows and isinstance(data.get("output1"), list):
+                rows = data.get("output1", [])
+            if not rows and isinstance(data.get("output"), list):
+                rows = data.get("output", [])
+
+            oldest_ymd: str = ""
+            added_count: int = 0
+            for row in rows:
+                ymd = str(
+                    row.get("xymd")
+                    or row.get("stck_bsop_date")
+                    or row.get("date")
+                    or row.get("bas_dt")
+                    or ""
+                )
+                if len(ymd) != 8 or ymd in seen_dates:
+                    continue
+                seen_dates.add(ymd)
+                all_rows.append(row)
+                added_count += 1
+                if not oldest_ymd or ymd < oldest_ymd:
+                    oldest_ymd = ymd
+
+            if added_count <= 0:
+                empty_streak += 1
+                if empty_streak >= 3:
+                    break
+                cursor_date = cursor_date - timedelta(days=1)
+                continue
+
+            empty_streak = 0
+            if oldest_ymd:
+                try:
+                    cursor_date = datetime.strptime(oldest_ymd, "%Y%m%d").date() - timedelta(days=1)
+                except Exception:
+                    cursor_date = cursor_date - timedelta(days=1)
+            else:
+                cursor_date = cursor_date - timedelta(days=1)
+
+            if len(all_rows) >= target_rows and cursor_date <= cutoff_date:
+                break
 
         tz_et = ZoneInfo("America/New_York")
         candles: List[Dict[str, Any]] = []
@@ -468,7 +537,7 @@ class KoreaInvestmentAPI:
             except Exception:
                 return 0.0
 
-        for row in rows:
+        for row in all_rows:
             ymd = str(
                 row.get("xymd")
                 or row.get("stck_bsop_date")
@@ -528,15 +597,7 @@ class KoreaInvestmentAPI:
         if not candles:
             return []
 
-        # API 응답 행 수가 많을 수 있어 period 기준으로 후행 필터링
-        keep_days_map: Dict[str, int] = {
-            "1mo": 31,
-            "3mo": 92,
-            "6mo": 184,
-            "1y": 366,
-            "2y": 731,
-        }
-        keep_days = keep_days_map.get(period, 366)
+        # 누적 조회 후 period 기준으로 후행 필터링
         cutoff_ts = int((now_et.timestamp()) - (keep_days * 86400))
         filtered = [c for c in candles if c["time"] >= cutoff_ts]
         return filtered if filtered else candles
