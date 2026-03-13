@@ -398,11 +398,11 @@
                             <span id="sellModalQty" class="text-sm font-bold text-white"></span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="text-xs text-slate-400">현재가</span>
+                            <span class="text-xs text-slate-400">예상 주문가</span>
                             <span id="sellModalPrice" class="text-sm font-bold text-white"></span>
                         </div>
                         <div class="border-t border-slate-700/50 pt-2.5 flex justify-between">
-                            <span class="text-xs text-slate-400">예상 체결 금액</span>
+                            <span class="text-xs text-slate-400">예상 순수령 금액</span>
                             <span id="sellModalAmount" class="text-sm font-bold text-emerald-400"></span>
                         </div>
                     </div>
@@ -1532,9 +1532,19 @@
             const curPrice = pos?.current_price || 0;
             const avgPrice = pos?.avg_price || 0;
             const rate = lastData?.exchange_rate || 1400;
-            const estAmount = sellQty * curPrice;
-            const profit = avgPrice > 0 ? (curPrice - avgPrice) * sellQty : 0;
-            const profitPct = avgPrice > 0 ? ((curPrice - avgPrice) / avgPrice * 100) : 0;
+            const sellPrice = market.session === '정규장'
+                ? Math.round((curPrice * 0.98) * 100) / 100
+                : Math.round((curPrice * 0.995) * 100) / 100;
+            const estAmount = sellQty * sellPrice;
+            const feeRate = Number(lastData?.sell_fee_rate || 0);
+            const taxRate = Number(lastData?.sell_tax_rate || 0);
+            const totalCostRate = Math.max(0, feeRate + taxRate);
+            const estCost = estAmount * totalCostRate;
+            const netAmount = estAmount - estCost;
+            const grossProfit = avgPrice > 0 ? (sellPrice - avgPrice) * sellQty : 0;
+            const profit = grossProfit - estCost;
+            const costBasis = avgPrice > 0 ? (avgPrice * sellQty) : 0;
+            const profitPct = costBasis > 0 ? (profit / costBasis * 100) : 0;
 
             const badge = document.getElementById('sellModalBadge');
             const sellSc = getSlotColor(symbol);
@@ -1544,8 +1554,8 @@
             document.getElementById('sellModalTitle').textContent = symbol;
             document.getElementById('sellModalPercent').textContent = `${percent}%`;
             document.getElementById('sellModalQty').textContent = `${sellQty}주 / ${totalQty}주`;
-            document.getElementById('sellModalPrice').textContent = `$${curPrice.toFixed(2)} (${(curPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원)`;
-            document.getElementById('sellModalAmount').textContent = `$${estAmount.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${(estAmount * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원)`;
+            document.getElementById('sellModalPrice').textContent = `$${sellPrice.toFixed(2)} (${(sellPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원)`;
+            document.getElementById('sellModalAmount').textContent = `$${netAmount.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${(netAmount * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원)`;
             document.getElementById('sellModalAvgPrice').textContent = `$${avgPrice.toFixed(2)} (${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원)`;
 
             const profitEl = document.getElementById('sellModalProfit');
@@ -1559,6 +1569,10 @@
                 <div class="flex justify-between">
                     <span class="text-xs text-slate-400">평균 매수가</span>
                     <span id="sellModalAvgPrice2" class="text-sm font-semibold text-white">$${avgPrice.toFixed(2)} (${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원)</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-xs text-slate-400">예상 수수료/제비용</span>
+                    <span class="text-sm font-semibold text-slate-300">$${estCost.toFixed(2)} (${(estCost * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원) / ${(totalCostRate * 100).toFixed(3)}%</span>
                 </div>
                 <div class="flex justify-between">
                     <span class="text-xs text-slate-400">예상 손익</span>
@@ -1587,8 +1601,8 @@
                 <div class="bg-slate-900/60 rounded-xl p-4 space-y-2.5">
                     <div class="flex justify-between"><span class="text-xs text-slate-400">매도 비율</span><span id="sellModalPercent" class="text-sm font-bold text-rose-400"></span></div>
                     <div class="flex justify-between"><span class="text-xs text-slate-400">매도 수량</span><span id="sellModalQty" class="text-sm font-bold text-white"></span></div>
-                    <div class="flex justify-between"><span class="text-xs text-slate-400">현재가</span><span id="sellModalPrice" class="text-sm font-bold text-white"></span></div>
-                    <div class="border-t border-slate-700/50 pt-2.5 flex justify-between"><span class="text-xs text-slate-400">예상 체결 금액</span><span id="sellModalAmount" class="text-sm font-bold text-emerald-400"></span></div>
+                    <div class="flex justify-between"><span class="text-xs text-slate-400">예상 주문가</span><span id="sellModalPrice" class="text-sm font-bold text-white"></span></div>
+                    <div class="border-t border-slate-700/50 pt-2.5 flex justify-between"><span class="text-xs text-slate-400">예상 순수령 금액</span><span id="sellModalAmount" class="text-sm font-bold text-emerald-400"></span></div>
                 </div>
                 <div id="sellModalPnl" class="bg-slate-900/60 rounded-xl p-4 space-y-2.5">
                     <div class="flex justify-between"><span class="text-xs text-slate-400">평균 매수가</span><span id="sellModalAvgPrice" class="text-sm font-semibold text-white"></span></div>

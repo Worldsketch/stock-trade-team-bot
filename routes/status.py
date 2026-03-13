@@ -1,3 +1,4 @@
+import os
 import time
 from typing import Any, Callable, Dict, Optional
 
@@ -6,6 +7,18 @@ from fastapi import APIRouter, Depends
 from bot import TradingBot
 from services.live_data_cache import LiveDataCache
 from services.trade_metrics import RealizedPnlCalculator
+
+
+def _parse_env_rate(name: str, default: float = 0.0) -> float:
+    try:
+        v = float(os.getenv(name, str(default)).strip())
+        return max(0.0, v)
+    except Exception:
+        return default
+
+
+SELL_FEE_RATE: float = _parse_env_rate("SELL_FEE_RATE", 0.0)
+SELL_TAX_RATE: float = _parse_env_rate("SELL_TAX_RATE", 0.0)
 
 
 def create_status_router(
@@ -89,6 +102,8 @@ def create_status_router(
                     "is_dst": bool(now_et.dst()),
                     "et_time": now_et.strftime("%H:%M"),
                     "kst_time": now_kst.strftime("%H:%M"),
+                    "sell_fee_rate": SELL_FEE_RATE,
+                    "sell_tax_rate": SELL_TAX_RATE,
                     "source": "bot_snapshot",
                 }
                 status_cache["data"] = result
@@ -231,6 +246,8 @@ def create_status_router(
                 "is_dst": bool(now_et.dst()),
                 "et_time": now_et.strftime("%H:%M"),
                 "kst_time": now_kst.strftime("%H:%M"),
+                "sell_fee_rate": SELL_FEE_RATE,
+                "sell_tax_rate": SELL_TAX_RATE,
             }
             total_ms: float = (time.perf_counter() - started_at) * 1000.0
             if total_ms >= 1200:
@@ -245,7 +262,13 @@ def create_status_router(
             try:
                 result = bot.get_status()
             except Exception:
-                result = {"error": f"상태 조회 실패: {error}", "is_running": False, "positions": []}
+                result = {
+                    "error": f"상태 조회 실패: {error}",
+                    "is_running": False,
+                    "positions": [],
+                    "sell_fee_rate": SELL_FEE_RATE,
+                    "sell_tax_rate": SELL_TAX_RATE,
+                }
 
         status_cache["data"] = result
         status_cache["ts"] = now
