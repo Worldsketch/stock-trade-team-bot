@@ -172,52 +172,27 @@ def create_chart_router(
                     candles = []
                     source = "none"
 
-            if not is_intraday and not candles:
-                import pandas as pd
-                import yfinance as yf
-                ticker = yf.Ticker(symbol)
-                use_prepost: bool = interval not in ("1d", "1wk", "1mo")
-                hist = ticker.history(period=period, interval=interval, prepost=use_prepost)
-                if not hist.empty:
-                    if is_intraday:
-                        us_candles: list = []
-                        for ts, row in hist.iterrows():
-                            ts_epoch = int(pd.Timestamp(ts).timestamp())
-                            us_session = classify_us_session(ts_epoch)
-                            if us_session == "off":
-                                continue
-                            if session_filter in ("pre", "regular", "after") and us_session != session_filter:
-                                continue
-                            us_candles.append(
-                                {
-                                    "time": ts_epoch,
-                                    "open": round(float(row.get("Open", 0.0)), 2),
-                                    "high": round(float(row.get("High", 0.0)), 2),
-                                    "low": round(float(row.get("Low", 0.0)), 2),
-                                    "close": round(float(row.get("Close", 0.0)), 2),
-                                    "volume": int(float(row.get("Volume", 0) or 0)),
-                                    "session": us_session,
-                                }
-                            )
-                        candles = us_candles
-                    else:
-                        timestamps = hist.index.astype("int64") // 10**9
-                        candles = (
-                            pd.DataFrame(
-                                {
-                                    "time": timestamps,
-                                    "open": hist["Open"].round(2),
-                                    "high": hist["High"].round(2),
-                                    "low": hist["Low"].round(2),
-                                    "close": hist["Close"].round(2),
-                                    "volume": hist["Volume"].astype(int),
-                                    "session": "daily",
-                                }
-                            )
-                            .to_dict("records")
-                        )
-                        session_applied = False
-                source = "yfinance"
+            if bot and not is_intraday and not candles:
+                try:
+                    daily = bot.api.get_daily_candles(symbol=symbol, period=period)
+                    candles = [
+                        {
+                            "time": int(c.get("time", 0)),
+                            "open": round(float(c.get("open", 0.0)), 2),
+                            "high": round(float(c.get("high", 0.0)), 2),
+                            "low": round(float(c.get("low", 0.0)), 2),
+                            "close": round(float(c.get("close", 0.0)), 2),
+                            "volume": int(float(c.get("volume", 0) or 0)),
+                            "session": "daily",
+                        }
+                        for c in daily
+                        if int(c.get("time", 0)) > 0
+                    ]
+                    session_applied = False
+                    source = "kis_daily" if candles else "none"
+                except Exception:
+                    candles = []
+                    source = "none"
 
             trades = [trade for trade in get_trade_entries() if trade.get("symbol") == symbol]
             result: Dict[str, Any] = {

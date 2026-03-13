@@ -430,6 +430,117 @@ class KoreaInvestmentAPI:
         candles.sort(key=lambda x: x["time"])
         return candles
 
+    @retry_api(max_retries=2, delay_sec=0.2)
+    def get_daily_candles(self, symbol: str, period: str = "1y") -> List[Dict[str, Any]]:
+        """해외주식 일봉 조회 (KIS only)"""
+        url: str = f"{self.base_url}/uapi/overseas-price/v1/quotations/dailyprice"
+        headers: Dict[str, str] = self.get_headers("HHDFS76240000")
+        short_excd: str = self._get_exchange_code(symbol, "short")
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        bymd = now_et.strftime("%Y%m%d")
+        params: Dict[str, str] = {
+            "AUTH": "",
+            "EXCD": short_excd,
+            "SYMB": symbol,
+            "GUBN": "0",
+            "BYMD": bymd,
+            "MODP": "0",
+        }
+        res = requests.get(url, headers=headers, params=params, timeout=(2.0, 5.0))
+        res.raise_for_status()
+        data = res.json()
+        if data.get("rt_cd") != "0":
+            msg = data.get("msg1", "Unknown")
+            raise Exception(f"일봉 조회 실패({short_excd}): {msg}")
+
+        rows: List[Dict[str, Any]] = data.get("output2", [])
+        if not rows and isinstance(data.get("output1"), list):
+            rows = data.get("output1", [])
+        if not rows and isinstance(data.get("output"), list):
+            rows = data.get("output", [])
+
+        tz_et = ZoneInfo("America/New_York")
+        candles: List[Dict[str, Any]] = []
+
+        def _as_float(value: Any) -> float:
+            try:
+                return float(value or 0)
+            except Exception:
+                return 0.0
+
+        for row in rows:
+            ymd = str(
+                row.get("xymd")
+                or row.get("stck_bsop_date")
+                or row.get("date")
+                or row.get("bas_dt")
+                or ""
+            )
+            if len(ymd) != 8:
+                continue
+            try:
+                dt_et = datetime(
+                    int(ymd[0:4]), int(ymd[4:6]), int(ymd[6:8]),
+                    0, 0, 0, tzinfo=tz_et
+                )
+            except Exception:
+                continue
+
+            o = _as_float(row.get("open") or row.get("stck_oprc") or row.get("ovrs_nmix_oprc"))
+            h = _as_float(row.get("high") or row.get("stck_hgpr") or row.get("ovrs_nmix_hgpr"))
+            l = _as_float(row.get("low") or row.get("stck_lwpr") or row.get("ovrs_nmix_lwpr"))
+            c = _as_float(
+                row.get("last")
+                or row.get("clos")
+                or row.get("close")
+                or row.get("stck_clpr")
+                or row.get("ovrs_nmix_prpr")
+            )
+            v = int(
+                _as_float(
+                    row.get("tvol")
+                    or row.get("evol")
+                    or row.get("acml_vol")
+                    or row.get("ovrs_nmix_vol")
+                )
+            )
+            if c <= 0:
+                continue
+            if o <= 0:
+                o = c
+            if h <= 0:
+                h = max(o, c)
+            if l <= 0:
+                l = min(o, c)
+
+            candles.append(
+                {
+                    "time": int(dt_et.timestamp()),
+                    "open": round(o, 2),
+                    "high": round(h, 2),
+                    "low": round(l, 2),
+                    "close": round(c, 2),
+                    "volume": max(v, 0),
+                }
+            )
+
+        candles.sort(key=lambda x: x["time"])
+        if not candles:
+            return []
+
+        # API 응답 행 수가 많을 수 있어 period 기준으로 후행 필터링
+        keep_days_map: Dict[str, int] = {
+            "1mo": 31,
+            "3mo": 92,
+            "6mo": 184,
+            "1y": 366,
+            "2y": 731,
+        }
+        keep_days = keep_days_map.get(period, 366)
+        cutoff_ts = int((now_et.timestamp()) - (keep_days * 86400))
+        filtered = [c for c in candles if c["time"] >= cutoff_ts]
+        return filtered if filtered else candles
+
     @retry_api(max_retries=3)
     def place_order(self, symbol: str, quantity: float, price: float, is_buy: bool, prefer_daytime: bool = False) -> bool:
         use_daytime: bool = prefer_daytime and (not self.is_mock) and self.enable_daytime_trading
