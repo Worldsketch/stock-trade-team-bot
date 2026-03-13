@@ -251,6 +251,8 @@ def create_chart_router(
             if price <= 0:
                 bot_snapshot = bot.get_live_snapshot(max_age_sec=4.0)
                 if bot_snapshot:
+                    portfolio_ts = float(bot_snapshot.get("portfolio_ts", 0.0) or 0.0)
+                    portfolio_age = (now - portfolio_ts) if portfolio_ts > 0 else 999.0
                     for pos in bot_snapshot.get("positions", []) or []:
                         if str(pos.get("symbol", "")).upper() != symbol.upper():
                             continue
@@ -258,7 +260,8 @@ def create_chart_router(
                             snap_price = float(pos.get("current_price", 0.0) or 0.0)
                         except Exception:
                             snap_price = 0.0
-                        if snap_price > 0:
+                        # 포지션 원본 동기화가 오래된 스냅샷은 현재가 소스로 사용하지 않음
+                        if snap_price > 0 and portfolio_age <= 2.0:
                             price = snap_price
                             source = "bot_snapshot"
                             break

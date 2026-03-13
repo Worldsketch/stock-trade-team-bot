@@ -50,19 +50,6 @@ def create_status_router(
             bot_snapshot: Optional[Dict[str, Any]] = bot.get_live_snapshot(max_age_sec=6.0)
             if bot_snapshot:
                 positions_list = list(bot_snapshot.get("positions", []))
-                if live_data_cache:
-                    live_data_cache.set_portfolio(
-                        {
-                            "usd_balance": float(bot_snapshot.get("usd_balance", 0.0) or 0.0),
-                            "exchange_rate": float(bot_snapshot.get("exchange_rate", 0.0) or 0.0),
-                            "krw_balance": float(bot_snapshot.get("krw_balance", 0.0) or 0.0),
-                            "krw_cash": float(bot_snapshot.get("krw_cash", 0.0) or 0.0),
-                            "positions": positions_list,
-                            "tot_evlu_pfls": float(bot_snapshot.get("tot_evlu_pfls", 0.0) or 0.0),
-                            "tot_pchs_amt": float(bot_snapshot.get("tot_pchs_amt", 0.0) or 0.0),
-                            "tot_stck_evlu": float(bot_snapshot.get("tot_stck_evlu", 0.0) or 0.0),
-                        }
-                    )
 
                 daily_pnl_usd: float = 0.0
                 for position in positions_list:

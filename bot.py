@@ -155,7 +155,11 @@ class TradingBot:
         self._live_snapshot_lock = threading.Lock()
         self._live_snapshot: Dict[str, Any] = {}
         self._last_live_snapshot_ts: float = 0.0
-        self._live_snapshot_interval_sec: float = 3.0
+        # 무거운 잔고/포지션 동기화 주기와, 가벼운 스냅샷 발행 주기를 분리
+        self._portfolio_sync_interval_sec: float = 5.0
+        self._snapshot_publish_interval_sec: float = 1.0
+        self._last_portfolio_sync_ts: float = 0.0
+        self._live_snapshot_interval_sec: float = self._snapshot_publish_interval_sec
         
         # 수동 매도 후 매수 차단 (타임스탬프)
         self.manual_sell_block: Dict[str, float] = {}
@@ -1197,6 +1201,7 @@ class TradingBot:
 
         return {
             "ts": time.time(),
+            "portfolio_ts": float(self._last_portfolio_sync_ts or time.time()),
             "usd_balance": float(self.last_usd_balance),
             "krw_balance": float(self.last_krw_balance),
             "krw_cash": float(self.last_krw_cash),
@@ -1230,6 +1235,7 @@ class TradingBot:
     def sync_positions(self) -> None:
         item_cd: str = self.symbols[0] if self.symbols else "AAPL"
         data: Dict[str, Any] = self.api.get_balance_and_positions(item_cd=item_cd, symbols=self.symbols)
+        self._last_portfolio_sync_ts = time.time()
         new_usd: float = data["usd_balance"]
         if new_usd <= 0 and self.last_usd_balance > 100:
             self.log(f"⚠️ [API 이상] USD 예수금 $0 반환 (기존 ${self.last_usd_balance:,.2f} 유지)", send_tg=False)
@@ -1582,6 +1588,7 @@ class TradingBot:
             # 재시작 직후에도 현재 포지션 기준으로 auto 모드를 즉시 반영
             self.fetch_market_data()
             self._check_auto_mode()
+            self._last_portfolio_sync_ts = time.time()
         except Exception as e:
             self.log(f"[초기 동기화 오류] {e}", send_tg=False)
 
@@ -1634,9 +1641,15 @@ class TradingBot:
                         break
                     time.sleep(1)
                     now_ts: float = time.time()
-                    if (now_ts - self._last_live_snapshot_ts) >= self._live_snapshot_interval_sec:
+                    if (now_ts - self._last_portfolio_sync_ts) >= self._portfolio_sync_interval_sec:
                         try:
-                            self.refresh_live_snapshot()
+                            self.sync_positions()
+                            self._publish_live_snapshot()
+                        except Exception as snapshot_error:
+                            self.log(f"[포지션 동기화 오류] {snapshot_error}", send_tg=False)
+                    elif (now_ts - self._last_live_snapshot_ts) >= self._snapshot_publish_interval_sec:
+                        try:
+                            self._publish_live_snapshot()
                         except Exception as snapshot_error:
                             self.log(f"[스냅샷 갱신 오류] {snapshot_error}", send_tg=False)
             except Exception as e:
