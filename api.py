@@ -292,6 +292,31 @@ class KoreaInvestmentAPI:
             result["tot_pchs_amt"] = tot_pchs_amt_sum
             result["tot_stck_evlu"] = tot_stck_evlu_sum
 
+            # 거래소별 조회 시 동일 심볼이 중복 응답되는 경우가 있어 심볼 기준으로 정규화
+            if positions:
+                deduped_positions: Dict[str, Dict[str, Any]] = {}
+                for pos in positions:
+                    sym: str = str(pos.get("symbol", ""))
+                    if not sym:
+                        continue
+                    prev = deduped_positions.get(sym)
+                    if prev is None:
+                        deduped_positions[sym] = pos
+                        continue
+                    prev_score = (
+                        float(prev.get("quantity", 0)),
+                        float(prev.get("evlu_amt", 0)),
+                        float(prev.get("current_price", 0)),
+                    )
+                    cur_score = (
+                        float(pos.get("quantity", 0)),
+                        float(pos.get("evlu_amt", 0)),
+                        float(pos.get("current_price", 0)),
+                    )
+                    if cur_score > prev_score:
+                        deduped_positions[sym] = pos
+                positions = list(deduped_positions.values())
+
             result["usd_balance"] = usd_balance
             result["positions"] = positions
             return result

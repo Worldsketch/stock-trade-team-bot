@@ -42,9 +42,20 @@ def create_status_router(
             held_symbols: set = set()
 
             active_slots = bot.slot_manager.get_active_slots()
-            for pos in data["positions"]:
+            sorted_positions = sorted(
+                data.get("positions", []),
+                key=lambda p: (
+                    float(p.get("quantity", 0.0)),
+                    float(p.get("evlu_amt", 0.0)),
+                    float(p.get("current_price", 0.0)),
+                ),
+                reverse=True,
+            )
+            for pos in sorted_positions:
                 symbol: str = pos["symbol"]
                 if symbol not in current_symbols:
+                    continue
+                if symbol in held_symbols:
                     continue
                 held_symbols.add(symbol)
                 current_price: float = pos.get("current_price", 0.0)
