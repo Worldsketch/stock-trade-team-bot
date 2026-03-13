@@ -542,7 +542,6 @@
         let _statusFetchInFlight = false;
         let _chartFetchController = null;
         let _chartDataCache = new Map();
-        let _chartLastKey = '';
         let _chartQuoteController = null;
         let _statusTimer = null;
         let _pendingTimer = null;
@@ -691,7 +690,7 @@
             }
         }
 
-        function renderChartData(symbol, period, interval, data, keepRange) {
+        function renderChartData(symbol, period, interval, data) {
             if (!data.candles || data.candles.length === 0) {
                 candleSeries.setData([]);
                 volumeSeries.setData([]);
@@ -730,26 +729,19 @@
             }
             candleSeries.setMarkers(markers);
 
-            const chartKey = getChartDataCacheKey(symbol, period, interval);
-            if (!keepRange || _chartLastKey !== chartKey) {
-                lwChart.timeScale().fitContent();
-                if (data.candles.length > 1) {
-                    lwChart.timeScale().setVisibleLogicalRange({
-                        from: 0,
-                        to: data.candles.length - 1,
-                    });
-                }
-                lwChart.timeScale().scrollToRealTime();
-            } else {
-                const visibleRange = lwChart.timeScale().getVisibleLogicalRange();
-                if (visibleRange && visibleRange.from < 0) {
-                    lwChart.timeScale().setVisibleLogicalRange({
-                        from: 0,
-                        to: Math.max(1, visibleRange.to - visibleRange.from),
-                    });
-                }
+            const barsCount = data.candles.length;
+            if (barsCount > 1) {
+                // 분/월/연 모두 "현재까지의 전체 캔들"이 한 화면에 보이도록 고정
+                lwChart.timeScale().setVisibleLogicalRange({
+                    from: -0.5,
+                    to: barsCount - 0.5,
+                });
+            } else if (barsCount === 1) {
+                lwChart.timeScale().setVisibleLogicalRange({
+                    from: -0.5,
+                    to: 0.5,
+                });
             }
-            _chartLastKey = chartKey;
 
             const liveIndicator = document.getElementById('chartLiveIndicator');
             if (liveIndicator && data.source) {
@@ -759,7 +751,6 @@
         }
 
         async function loadChartData(symbol, period, interval, options = {}) {
-            const keepRange = options.keepRange === true;
             const allowCache = options.allowCache !== false;
             const auth = getAuthHeader();
             if (!auth) return null;
@@ -770,7 +761,7 @@
                 if (cachedData) {
                     if (symbol !== currentChartSymbol || period !== currentChartPeriod || interval !== currentChartInterval) return null;
                     if ((cachedData.session || 'all') !== CHART_SESSION) return null;
-                    return renderChartData(symbol, period, interval, cachedData, keepRange);
+                    return renderChartData(symbol, period, interval, cachedData);
                 }
             }
 
@@ -791,7 +782,7 @@
                 if (symbol !== currentChartSymbol || period !== currentChartPeriod || interval !== currentChartInterval) return null;
                 if ((data.session || 'all') !== CHART_SESSION) return null;
                 setCachedChartData(cacheKey, data);
-                return renderChartData(symbol, period, interval, data, keepRange);
+                return renderChartData(symbol, period, interval, data);
             } catch(e) {
                 if (e.name !== 'AbortError') {
                     console.error('Chart data error:', e);
