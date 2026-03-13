@@ -39,26 +39,47 @@ def create_chart_router(
             return cached["data"]
 
         try:
-            ticker = yf.Ticker(symbol)
-            use_prepost: bool = interval not in ("1d", "1wk", "1mo")
-            hist = ticker.history(period=period, interval=interval, prepost=use_prepost)
-            if hist.empty:
-                return {"candles": [], "symbol": symbol}
+            candles: list = []
+            source: str = "yfinance"
+            is_daytime: bool = bool(bot and bot.is_daytime_market_open(bot.get_korean_time()))
+            is_intraday: bool = interval.endswith("m")
 
-            timestamps: pd.Series = hist.index.astype("int64") // 10**9
-            candles: list = (
-                pd.DataFrame(
-                    {
-                        "time": timestamps,
-                        "open": hist["Open"].round(2),
-                        "high": hist["High"].round(2),
-                        "low": hist["Low"].round(2),
-                        "close": hist["Close"].round(2),
-                        "volume": hist["Volume"].astype(int),
-                    }
+            # 데이장(KST 09:00~16:00)에서는 한투 분봉을 우선 사용하여 현재가/차트 괴리를 줄임
+            if bot and is_daytime and period == "1d" and is_intraday:
+                try:
+                    interval_min: int = int(interval[:-1])
+                    candles = bot.api.get_intraday_candles(
+                        symbol=symbol,
+                        interval_min=interval_min,
+                        nrec=120,
+                        prefer_daytime=True,
+                    )
+                    if candles:
+                        source = "kis_daytime"
+                except Exception:
+                    candles = []
+
+            if not candles:
+                ticker = yf.Ticker(symbol)
+                use_prepost: bool = interval not in ("1d", "1wk", "1mo")
+                hist = ticker.history(period=period, interval=interval, prepost=use_prepost)
+                if hist.empty:
+                    return {"candles": [], "symbol": symbol}
+
+                timestamps: pd.Series = hist.index.astype("int64") // 10**9
+                candles = (
+                    pd.DataFrame(
+                        {
+                            "time": timestamps,
+                            "open": hist["Open"].round(2),
+                            "high": hist["High"].round(2),
+                            "low": hist["Low"].round(2),
+                            "close": hist["Close"].round(2),
+                            "volume": hist["Volume"].astype(int),
+                        }
+                    )
+                    .to_dict("records")
                 )
-                .to_dict("records")
-            )
 
             trades: list = []
             trade_file: str = "trade_log.json"
@@ -76,7 +97,7 @@ def create_chart_router(
                             }
                         )
 
-            result: Dict[str, Any] = {"candles": candles, "symbol": symbol, "trades": trades}
+            result: Dict[str, Any] = {"candles": candles, "symbol": symbol, "trades": trades, "source": source}
             chart_cache[cache_key] = {"data": result, "ts": now}
             return result
         except Exception as error:

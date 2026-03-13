@@ -39,6 +39,7 @@ class KoreaInvestmentAPI:
 
         self._exchange_cache: Dict[str, str] = {}
         self._EXCHANGE_MAP: Dict[str, str] = {"NAS": "NASD", "NYS": "NYSE", "AMS": "AMEX"}
+        self._DAYTIME_EXCD_MAP: Dict[str, str] = {"NAS": "BAQ", "NYS": "BAY", "AMS": "BAA"}
         daytime_flag: str = os.getenv("KIS_ENABLE_DAYTIME_TRADING", "true").strip().lower()
         self.enable_daytime_trading: bool = daytime_flag not in ("0", "false", "off", "no")
 
@@ -97,6 +98,16 @@ class KoreaInvestmentAPI:
         from datetime import datetime
         kr_tz = pytz.timezone('Asia/Seoul')
         return datetime.now(kr_tz).timestamp()
+
+    def _is_daytime_window_open(self) -> bool:
+        if not self.enable_daytime_trading or self.is_mock:
+            return False
+        now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+        if now_kst.weekday() >= 5:
+            return False
+        start = now_kst.replace(hour=9, minute=0, second=0, microsecond=0)
+        end = now_kst.replace(hour=16, minute=0, second=0, microsecond=0)
+        return start <= now_kst < end
 
     def get_headers(self, tr_id: str) -> Dict[str, str]:
         now_kr: float = self.get_korean_time()
@@ -289,22 +300,98 @@ class KoreaInvestmentAPI:
         return self.get_balance_and_positions()["usd_balance"]
 
     @retry_api(max_retries=3)
-    def get_current_price(self, symbol: str) -> float:
+    def get_current_price(self, symbol: str, prefer_daytime: bool = False) -> float:
         url: str = f"{self.base_url}/uapi/overseas-price/v1/quotations/price"
         headers: Dict[str, str] = self.get_headers("HHDFS00000300")
+        short_excd: str = self._get_exchange_code(symbol, "short")
+        should_try_daytime: bool = prefer_daytime or self._is_daytime_window_open()
+
+        excd_candidates: List[str] = []
+        if should_try_daytime:
+            excd_candidates.append(self._DAYTIME_EXCD_MAP.get(short_excd, short_excd))
+        excd_candidates.append(short_excd)
+
+        seen: set = set()
+        for excd in excd_candidates:
+            if excd in seen:
+                continue
+            seen.add(excd)
+            params: Dict[str, str] = {
+                "AUTH": "",
+                "EXCD": excd,
+                "SYMB": symbol
+            }
+            res = requests.get(url, headers=headers, params=params)
+            res.raise_for_status()
+            try:
+                data = res.json()
+                price = float(data.get('output', {}).get('last', 0))
+                if price > 0:
+                    return price
+            except (KeyError, ValueError, TypeError):
+                continue
+        return 0.0
+
+    @retry_api(max_retries=3)
+    def get_intraday_candles(
+        self,
+        symbol: str,
+        interval_min: int = 5,
+        nrec: int = 120,
+        prefer_daytime: bool = False
+    ) -> List[Dict[str, Any]]:
+        url: str = f"{self.base_url}/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice"
+        headers: Dict[str, str] = self.get_headers("HHDFS76950200")
+        short_excd: str = self._get_exchange_code(symbol, "short")
+        use_daytime: bool = prefer_daytime or self._is_daytime_window_open()
+        excd: str = self._DAYTIME_EXCD_MAP.get(short_excd, short_excd) if use_daytime else short_excd
+
+        safe_nmin: int = max(1, min(int(interval_min), 120))
+        safe_nrec: int = max(1, min(int(nrec), 120))
         params: Dict[str, str] = {
             "AUTH": "",
-            "EXCD": self._get_exchange_code(symbol, "short"),
-            "SYMB": symbol
+            "EXCD": excd,
+            "SYMB": symbol,
+            "NMIN": str(safe_nmin),
+            "PINC": "0",
+            "NEXT": "",
+            "NREC": str(safe_nrec),
+            "FILL": "",
+            "KEYB": "",
         }
         res = requests.get(url, headers=headers, params=params)
         res.raise_for_status()
-        
-        try:
-            data = res.json()
-            return float(data['output']['last'])
-        except (KeyError, ValueError, TypeError):
-            return 0.0
+        data = res.json()
+        if data.get("rt_cd") != "0":
+            msg = data.get("msg1", "Unknown")
+            raise Exception(f"분봉 조회 실패({excd}): {msg}")
+
+        rows: List[Dict[str, Any]] = data.get("output2", [])
+        candles: List[Dict[str, Any]] = []
+        tz_et = ZoneInfo("America/New_York")
+        for row in rows:
+            try:
+                ymd: str = str(row.get("xymd", ""))
+                hms: str = str(row.get("xhms", ""))
+                if len(ymd) != 8 or len(hms) < 6:
+                    continue
+                dt_et = datetime(
+                    int(ymd[0:4]), int(ymd[4:6]), int(ymd[6:8]),
+                    int(hms[0:2]), int(hms[2:4]), int(hms[4:6]),
+                    tzinfo=tz_et
+                )
+                candles.append({
+                    "time": int(dt_et.timestamp()),
+                    "open": float(row.get("open", 0) or 0),
+                    "high": float(row.get("high", 0) or 0),
+                    "low": float(row.get("low", 0) or 0),
+                    "close": float(row.get("last", 0) or 0),
+                    "volume": int(float(row.get("evol", 0) or 0)),
+                })
+            except Exception:
+                continue
+        candles.sort(key=lambda x: x["time"])
+        return candles
 
     @retry_api(max_retries=3)
     def place_order(self, symbol: str, quantity: float, price: float, is_buy: bool, prefer_daytime: bool = False) -> bool:

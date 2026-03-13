@@ -36,6 +36,7 @@ def create_status_router(
         try:
             item_code: str = bot.symbols[0] if bot.symbols else "AAPL"
             data: Dict[str, Any] = bot.api.get_balance_and_positions(item_cd=item_code, symbols=bot.symbols)
+            is_daytime_session: bool = bot.is_daytime_market_open(bot.get_korean_time())
             current_symbols: list = bot.symbols
             positions_list: list = []
             held_symbols: set = set()
@@ -47,7 +48,12 @@ def create_status_router(
                     continue
                 held_symbols.add(symbol)
                 current_price: float = pos.get("current_price", 0.0)
-                if current_price <= 0:
+                if is_daytime_session:
+                    try:
+                        current_price = bot.api.get_current_price(symbol, prefer_daytime=True)
+                    except Exception:
+                        pass
+                elif current_price <= 0:
                     try:
                         current_price = bot.api.get_current_price(symbol)
                     except Exception:
@@ -81,7 +87,7 @@ def create_status_router(
                 slot_info = next((slot for slot in active_slots if slot["symbol"] == symbol), {})
                 fallback_price: float = 0.0
                 try:
-                    fallback_price = bot.api.get_current_price(symbol)
+                    fallback_price = bot.api.get_current_price(symbol, prefer_daytime=is_daytime_session)
                 except Exception:
                     pass
                 base_symbol = slot_info.get("base_asset", symbol)
