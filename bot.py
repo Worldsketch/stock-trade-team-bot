@@ -134,7 +134,7 @@ class TradingBot:
         self.last_krw_balance: float = 0.0
         self.last_krw_cash: float = 0.0
         self.exchange_rate: float = 1400.0
-        self.display_exchange_rate: float = 1400.0
+        self.display_exchange_rate: float = 0.0
         self._display_exchange_rate_ts: float = 0.0
         self._display_exchange_rate_ttl_sec: float = 300.0
         self.tot_evlu_pfls: float = 0.0
@@ -651,9 +651,6 @@ class TradingBot:
             hist = ticker.history(period="1d")
             if not hist.empty:
                 self.exchange_rate = float(hist['Close'].iloc[-1])
-                if self.exchange_rate > 0:
-                    self.display_exchange_rate = self.exchange_rate
-                    self._display_exchange_rate_ts = time.time()
         except Exception:
             pass
 
