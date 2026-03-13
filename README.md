@@ -17,7 +17,7 @@
 
 - 최대 6개 슬롯, 빈 상태로 시작 (슬롯별 고유 컬러 + 글로우 효과 자동 배정)
 - **슬롯 추가**: 미국장(ET 04:00~20:00) 또는 데이장(KST 09:00~16:00)에 가능 → 티커 자동완성 검색 → 비율 선택(총자산 대비 1~10%) → 매수 주문 → 슬롯 활성화
-- **티커 검색**: yfinance 기반 실시간 자동완성 (종목명/티커 입력 시 드롭다운), Magnificent 7 + 레버리지 ETF 인기종목 바로가기
+- **티커 검색**: KIS 해외 종목마스터 기반 자동완성 (종목명/티커 입력 시 드롭다운), Magnificent 7 + 레버리지 ETF 인기종목 바로가기
 - **자동 등록**: 서버 시작 시 `slots.json`이 비어있으면 한투 API에서 보유 종목을 감지하여 자동 등록
 - **슬롯 제거**: 전량 매도 후 제거 or 매도 없이 감시 중단
 - **자동 정리**: 보유 수량 0주인 슬롯은 10분 경과 후 자동 제거 (텔레그램 알림)
@@ -82,7 +82,7 @@
 - Python 3.11+
 - FastAPI (대시보드 + API 서버)
 - 한국투자증권 Open API (잔고, 주문, 시세)
-- yfinance (시장 데이터, 티커 검증/자동완성, SMA/RSI 계산)
+- yfinance (전략/AI 보조 시장 데이터)
 - exchange_calendars (NYSE 휴장일/조기폐장 동적 관리)
 - Gemini API (AI 시장 분석)
 - Tailwind CSS + LightweightCharts (대시보드 UI)
@@ -112,6 +112,7 @@
 ├── trade_log.json        # 매매 내역 기록
 ├── equity_log.json       # 일별 자산 스냅샷
 ├── ai_report.json        # AI 분석 리포트 캐시
+├── us_symbol_master.json # KIS 해외 종목마스터 캐시 (자동 생성)
 ├── requirements.txt
 ├── .env.example
 └── static/
@@ -135,7 +136,7 @@
 | POST | `/api/slots/add` | 슬롯에 종목 추가 (비율 매수) |
 | POST | `/api/slots/remove` | 슬롯에서 종목 제거 |
 | GET | `/api/search-ticker` | 티커 검색/검증 |
-| GET | `/api/autocomplete` | 티커 자동완성 (yfinance Search) |
+| GET | `/api/autocomplete` | 티커 자동완성 (KIS 종목마스터 기반) |
 | POST | `/api/sell` | 수동 매도 (비율 지정) |
 | GET | `/api/ai-report` | AI 분석 리포트 조회 |
 | POST | `/api/ai-report/refresh` | AI 리포트 수동 재발행 |
