@@ -41,11 +41,10 @@
         .toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; border-radius: 50%; transition: .3s; }
         input:checked + .toggle-slider { background-color: #10b981; }
         input:checked + .toggle-slider:before { transform: translateX(20px); }
-        .chart-btn, .chart-period-btn, .chart-session-btn { color: #94a3b8; }
-        .chart-btn:hover, .chart-period-btn:hover, .chart-session-btn:hover { color: #fff; }
+        .chart-btn, .chart-period-btn { color: #94a3b8; }
+        .chart-btn:hover, .chart-period-btn:hover { color: #fff; }
         .chart-btn.active { background-color: rgba(16,185,129,0.25); color: #6ee7b7; }
         .chart-period-btn.active { background-color: rgba(59,130,246,0.25); color: #93c5fd; }
-        .chart-session-btn.active { background-color: rgba(14,165,233,0.22); color: #7dd3fc; }
         .stat-card { position: relative; overflow: hidden; }
         .stat-card .stat-bg-icon { position: absolute; right: -8px; bottom: -12px; font-size: 72px; opacity: 0.04; pointer-events: none; }
         .tab-btn { transition: all 0.2s; }
@@ -183,13 +182,6 @@
                         <span id="chartLiveIndicator" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block"></span>
                     </h2>
                     <div class="flex gap-2 flex-wrap justify-end">
-                        <div id="chartSessionGroup" class="flex bg-slate-900/60 rounded-lg p-0.5 gap-0.5">
-                            <button onclick="setChartSession('all')" data-session="all" class="chart-session-btn active px-2 py-1 text-[11px] font-medium rounded-md transition-all">전체</button>
-                            <button onclick="setChartSession('daytime')" data-session="daytime" class="chart-session-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">데이장</button>
-                            <button onclick="setChartSession('pre')" data-session="pre" class="chart-session-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">프리장</button>
-                            <button onclick="setChartSession('regular')" data-session="regular" class="chart-session-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">본장</button>
-                            <button onclick="setChartSession('after')" data-session="after" class="chart-session-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">애프터</button>
-                        </div>
                         <div id="chartPeriodGroup" class="flex bg-slate-900/60 rounded-lg p-0.5 gap-0.5">
                             <button onclick="setChartPeriod('1d','5m')" data-period="1d" class="chart-period-btn active px-2 py-1 text-[11px] font-medium rounded-md transition-all">분</button>
                             <button onclick="setChartPeriod('1mo','1d')" data-period="1mo" class="chart-period-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">일</button>
@@ -536,7 +528,7 @@
         let currentChartSymbol = '';
         let currentChartPeriod = '1d';
         let currentChartInterval = '5m';
-        let currentChartSession = 'all';
+        const CHART_SESSION = 'all';
         let showKrw = true;
         let lastData = null;
         let allTrades = [];
@@ -554,6 +546,11 @@
         let _chartTimer = null;
         let _quoteTimer = null;
         let _pollGeneration = 0;
+        let _pollRiskUntil = 0;
+        const POLL_NORMAL_MS = 3000;
+        const POLL_RISK_MS = 6000;
+        const POLL_RISK_HOLD_MS = 60000;
+        const POLL_SLOW_THRESHOLD_MS = 2500;
 
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/static/sw.js').catch(() => {});
@@ -642,7 +639,7 @@
         async function loadChartData(symbol, period, interval, options = {}) {
             const keepRange = options.keepRange === true;
             const auth = getAuthHeader();
-            if (!auth) return;
+            if (!auth) return null;
             if (_chartFetchController) _chartFetchController.abort();
             _chartFetchController = new AbortController();
             try {
@@ -650,22 +647,22 @@
                     symbol,
                     period,
                     interval,
-                    session: currentChartSession,
+                    session: CHART_SESSION,
                 });
                 const res = await fetch(`/api/chart-data?${query.toString()}`, {
                     headers: { 'Authorization': auth },
                     signal: _chartFetchController.signal,
                 });
                 const data = await res.json();
-                if (symbol !== currentChartSymbol || period !== currentChartPeriod || interval !== currentChartInterval) return;
-                if ((data.session || 'all') !== currentChartSession) return;
+                if (symbol !== currentChartSymbol || period !== currentChartPeriod || interval !== currentChartInterval) return null;
+                if ((data.session || 'all') !== CHART_SESSION) return null;
                 if (!data.candles || data.candles.length === 0) {
                     candleSeries.setData([]);
                     volumeSeries.setData([]);
                     candleSeries.setMarkers([]);
                     _lastCandle = null;
                     _lastCandleSession = 'all';
-                    return;
+                    return true;
                 }
 
                 candleSeries.setData(data.candles);
@@ -697,7 +694,7 @@
                 }
                 candleSeries.setMarkers(markers);
 
-                const chartKey = `${symbol}_${period}_${interval}_${currentChartSession}`;
+                const chartKey = `${symbol}_${period}_${interval}_${CHART_SESSION}`;
                 if (!keepRange || _chartLastKey !== chartKey) {
                     lwChart.timeScale().fitContent();
                 }
@@ -707,10 +704,13 @@
                 if (liveIndicator && data.source) {
                     liveIndicator.title = `차트 소스: ${data.source}`;
                 }
+                return true;
             } catch(e) {
                 if (e.name !== 'AbortError') {
                     console.error('Chart data error:', e);
+                    return false;
                 }
+                return null;
             }
         }
 
@@ -735,26 +735,11 @@
             loadChartData(currentChartSymbol, period, interval, { keepRange: false });
         }
 
-        function setChartSession(session) {
-            currentChartSession = session;
-            document.querySelectorAll('#chartSessionGroup .chart-session-btn').forEach(btn => {
-                if (btn.dataset.session === session) {
-                    btn.classList.add('active');
-                } else {
-                    btn.classList.remove('active');
-                }
-            });
-            if (currentChartSymbol) {
-                loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval, { keepRange: false });
-            }
-        }
-
         let _lastCandle = null;
         let _lastCandleSession = 'all';
 
         function applyRealtimePrice(price, sessionTag = 'all') {
             if (!candleSeries || !_lastCandle || !price || price <= 0) return;
-            if (currentChartSession !== 'all' && currentChartSession !== sessionTag) return;
             const updated = {
                 time: _lastCandle.time,
                 open: _lastCandle.open,
@@ -776,11 +761,9 @@
         }
 
         async function fetchChartQuote() {
-            if (!currentChartSymbol || !_lastCandle) return;
-            const currentSession = getCurrentSessionKey();
-            if (currentChartSession !== 'all' && currentChartSession !== currentSession) return;
+            if (!currentChartSymbol || !_lastCandle) return null;
             const auth = getAuthHeader();
-            if (!auth) return;
+            if (!auth) return null;
             if (_chartQuoteController) _chartQuoteController.abort();
             _chartQuoteController = new AbortController();
             try {
@@ -790,15 +773,18 @@
                     signal: _chartQuoteController.signal,
                 });
                 const data = await res.json();
-                if (currentChartSymbol !== data.symbol) return;
+                if (currentChartSymbol !== data.symbol) return null;
                 const price = Number(data.price || 0);
-                if (price <= 0) return;
+                if (price <= 0) return null;
                 const quoteSession = data.session || 'all';
                 applyRealtimePrice(price, quoteSession);
+                return true;
             } catch (e) {
                 if (e.name !== 'AbortError') {
                     console.error('Chart quote error:', e);
+                    return false;
                 }
+                return null;
             }
         }
 
@@ -873,18 +859,20 @@
             modal.classList.remove('hidden');
         }
 
-        function isLiveTradingWindow() {
-            return (lastData?.market_open === true) || (lastData?.daytime_open === true);
+        function isPollRiskMode() {
+            return Date.now() < _pollRiskUntil;
+        }
+
+        function enterPollRisk(reason = '') {
+            _pollRiskUntil = Math.max(_pollRiskUntil, Date.now() + POLL_RISK_HOLD_MS);
+            const liveIndicator = document.getElementById('chartLiveIndicator');
+            if (liveIndicator) {
+                liveIndicator.title = `폴링 보호모드(6초) 활성: ${reason || '응답 지연/실패 감지'}`;
+            }
         }
 
         function getPollMs(kind) {
-            const hidden = document.visibilityState === 'hidden';
-            const live = isLiveTradingWindow();
-            if (kind === 'status') return hidden ? 30000 : (live ? 6000 : 15000);
-            if (kind === 'pending') return hidden ? 40000 : (live ? 12000 : 30000);
-            if (kind === 'chart') return hidden ? 180000 : (live ? 60000 : 120000);
-            if (kind === 'quote') return hidden ? 20000 : (live ? 2500 : 10000);
-            return 10000;
+            return isPollRiskMode() ? POLL_RISK_MS : POLL_NORMAL_MS;
         }
 
         function clearPollTimers() {
@@ -900,22 +888,38 @@
 
         async function runStatusPoll(gen) {
             if (gen !== _pollGeneration) return;
-            await fetchStatus();
+            const started = performance.now();
+            const ok = await fetchStatus();
+            const elapsed = performance.now() - started;
+            if (ok === false || (ok === true && elapsed >= POLL_SLOW_THRESHOLD_MS)) {
+                enterPollRisk(`status ${Math.round(elapsed)}ms`);
+            }
             if (gen !== _pollGeneration) return;
             _statusTimer = setTimeout(() => runStatusPoll(gen), getPollMs('status'));
         }
 
         async function runPendingPoll(gen) {
             if (gen !== _pollGeneration) return;
-            await fetchPendingOrders();
+            const started = performance.now();
+            const ok = await fetchPendingOrders();
+            const elapsed = performance.now() - started;
+            if (ok === false || (ok === true && elapsed >= POLL_SLOW_THRESHOLD_MS)) {
+                enterPollRisk(`pending ${Math.round(elapsed)}ms`);
+            }
             if (gen !== _pollGeneration) return;
             _pendingTimer = setTimeout(() => runPendingPoll(gen), getPollMs('pending'));
         }
 
         async function runChartPoll(gen) {
             if (gen !== _pollGeneration) return;
+            let ok = null;
+            const started = performance.now();
             if (currentChartSymbol) {
-                await loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval, { keepRange: true });
+                ok = await loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval, { keepRange: true });
+            }
+            const elapsed = performance.now() - started;
+            if (ok === false || (ok === true && elapsed >= POLL_SLOW_THRESHOLD_MS)) {
+                enterPollRisk(`chart ${Math.round(elapsed)}ms`);
             }
             if (gen !== _pollGeneration) return;
             _chartTimer = setTimeout(() => runChartPoll(gen), getPollMs('chart'));
@@ -923,7 +927,12 @@
 
         async function runQuotePoll(gen) {
             if (gen !== _pollGeneration) return;
-            await fetchChartQuote();
+            const started = performance.now();
+            const ok = await fetchChartQuote();
+            const elapsed = performance.now() - started;
+            if (ok === false || (ok === true && elapsed >= POLL_SLOW_THRESHOLD_MS)) {
+                enterPollRisk(`quote ${Math.round(elapsed)}ms`);
+            }
             if (gen !== _pollGeneration) return;
             _quoteTimer = setTimeout(() => runQuotePoll(gen), getPollMs('quote'));
         }
@@ -939,19 +948,21 @@
         }
 
         async function fetchStatus() {
-            if (_statusFetchInFlight) return;
+            if (_statusFetchInFlight) return null;
             const auth = getAuthHeader();
-            if (!auth) { showLogin(); return; }
+            if (!auth) { showLogin(); return null; }
             _statusFetchInFlight = true;
             try {
                 const res = await fetch('/api/status', { headers: { 'Authorization': auth } });
-                if (res.status === 401) { localStorage.removeItem('bot_auth_token'); showLogin(); return; }
+                if (res.status === 401) { localStorage.removeItem('bot_auth_token'); showLogin(); return null; }
                 const data = await res.json();
-                if (data.error) return;
+                if (data.error) return false;
                 lastData = data;
                 updateUI(data);
+                return true;
             } catch (err) {
                 console.error("Fetch error:", err);
+                return false;
             } finally {
                 _statusFetchInFlight = false;
             }
@@ -997,26 +1008,6 @@
                 reg: dst ? '22:30 ~ 05:00' : '23:30 ~ 06:00',
                 aft: dst ? '05:00 ~ 09:00' : '06:00 ~ 10:00',
             };
-        }
-
-        function getCurrentSessionKey() {
-            const now = new Date();
-            const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
-            const kDay = kst.getDay();
-            const kMin = kst.getHours() * 60 + kst.getMinutes();
-            if (kDay >= 1 && kDay <= 5 && kMin >= 540 && kMin < 960) {
-                return 'daytime';
-            }
-
-            const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
-            const eDay = et.getDay();
-            const eMin = et.getHours() * 60 + et.getMinutes();
-            if (eDay >= 1 && eDay <= 5) {
-                if (eMin >= 240 && eMin < 570) return 'pre';
-                if (eMin >= 570 && eMin < 960) return 'regular';
-                if (eMin >= 960 && eMin < 1200) return 'after';
-            }
-            return 'off';
         }
 
         function updateUI(data) {
@@ -1413,15 +1404,24 @@
         let _pendingOrdersData = [];
         async function fetchPendingOrders() {
             const auth = getAuthHeader();
-            if (!auth) return;
+            if (!auth) return null;
             try {
                 const res = await fetch('/api/pending-orders', { headers: { 'Authorization': auth } });
+                if (res.status === 401) {
+                    localStorage.removeItem('bot_auth_token');
+                    showLogin();
+                    return null;
+                }
                 const data = await res.json();
                 _pendingOrdersData = (data.orders && data.orders.length > 0) ? data.orders : [];
                 const section = document.getElementById('pendingOrdersSection');
                 section.classList.add('hidden');
                 renderPendingInCards();
-            } catch(e) { console.error('Pending orders error:', e); }
+                return true;
+            } catch(e) {
+                console.error('Pending orders error:', e);
+                return false;
+            }
         }
 
         function renderPendingInCards() {

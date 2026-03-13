@@ -227,7 +227,7 @@ def create_chart_router(
         session = resolve_live_session(bot)
         cache_key = f"{symbol}_{session}"
         now = time.time()
-        ttl = 2.0 if session != "off" else 15.0
+        ttl = 3.0
         cached = quote_cache.get(cache_key)
         if cached and (now - cached["ts"]) < ttl:
             return cached["data"]

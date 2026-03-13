@@ -22,7 +22,7 @@ def create_status_router(
             return {"error": "Bot is not initialized."}
 
         now: float = time.time()
-        if status_cache["data"] and (now - status_cache["ts"]) < 5:
+        if status_cache["data"] and (now - status_cache["ts"]) < 3:
             return status_cache["data"]
 
         try:
