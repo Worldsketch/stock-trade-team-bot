@@ -643,7 +643,10 @@
                     borderColor: '#475569',
                     timeVisible: true,
                     secondsVisible: false,
-                    rightOffset: 2,
+                    rightOffset: 0,
+                    fixLeftEdge: true,
+                    fixRightEdge: true,
+                    ignoreWhitespaceIndices: true,
                 },
                 handleScroll: { horzTouchDrag: !isMobile, vertTouchDrag: false },
                 handleScale: { pinch: !isMobile },
@@ -731,10 +734,18 @@
             if (!keepRange || _chartLastKey !== chartKey) {
                 lwChart.timeScale().fitContent();
                 if (data.candles.length > 1) {
-                    const edgePadBars = Math.max(2, Math.min(10, Math.round(data.candles.length * 0.03)));
                     lwChart.timeScale().setVisibleLogicalRange({
-                        from: -edgePadBars,
-                        to: (data.candles.length - 1) + edgePadBars,
+                        from: 0,
+                        to: data.candles.length - 1,
+                    });
+                }
+                lwChart.timeScale().scrollToRealTime();
+            } else {
+                const visibleRange = lwChart.timeScale().getVisibleLogicalRange();
+                if (visibleRange && visibleRange.from < 0) {
+                    lwChart.timeScale().setVisibleLogicalRange({
+                        from: 0,
+                        to: Math.max(1, visibleRange.to - visibleRange.from),
                     });
                 }
             }
