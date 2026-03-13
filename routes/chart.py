@@ -22,6 +22,17 @@ def create_chart_router(
     valid_sessions = {"all", "daytime", "pre", "regular", "after"}
     tz_et = ZoneInfo("America/New_York")
 
+    def estimate_intraday_nrec(period: str, interval_min: int) -> int:
+        if interval_min <= 0:
+            return 120
+        period_map = {
+            "1d": 24 * 60,
+            "5d": 5 * 24 * 60,
+            "1mo": 30 * 24 * 60,
+        }
+        total_minutes = period_map.get(period, 24 * 60)
+        return max(1, min(int(total_minutes / interval_min) + 20, 120))
+
     def classify_us_session(ts_epoch: int) -> str:
         dt_et = datetime.fromtimestamp(ts_epoch, tz=tz_et)
         minute_of_day = dt_et.hour * 60 + dt_et.minute
@@ -97,9 +108,6 @@ def create_chart_router(
         session: str = "all",
         username: str = Depends(auth_dependency),
     ) -> Dict[str, Any]:
-        import pandas as pd
-        import yfinance as yf
-
         bot = get_bot()
         if not symbol and bot and bot.symbols:
             symbol = bot.symbols[0]
@@ -119,35 +127,60 @@ def create_chart_router(
 
         try:
             candles: list = []
-            us_candles: list = []
-            daytime_candles: list = []
-            source: str = "yfinance"
+            source: str = "none"
             is_intraday: bool = interval.endswith("m")
             session_applied: bool = is_intraday
 
-            use_daytime_data = bool(bot and period == "1d" and is_intraday and session_filter in ("all", "daytime"))
-            if use_daytime_data:
+            if bot and is_intraday:
                 try:
                     interval_min: int = int(interval[:-1])
-                    daytime_candles = bot.api.get_intraday_candles(
+                    live_session = resolve_live_session(bot)
+                    prefer_daytime = session_filter == "daytime" or (session_filter == "all" and live_session == "daytime")
+                    kis_candles = bot.api.get_intraday_candles(
                         symbol=symbol,
                         interval_min=interval_min,
-                        nrec=120,
-                        prefer_daytime=True,
+                        nrec=estimate_intraday_nrec(period, interval_min),
+                        prefer_daytime=prefer_daytime,
                     )
+                    normalized: list = []
+                    for candle in kis_candles:
+                        ts_epoch = int(candle.get("time", 0) or 0)
+                        if ts_epoch <= 0:
+                            continue
+                        if prefer_daytime:
+                            candle_session = "daytime"
+                        else:
+                            candle_session = classify_us_session(ts_epoch)
+                            if candle_session == "off":
+                                continue
+                        if session_filter in ("pre", "regular", "after") and candle_session != session_filter:
+                            continue
+                        normalized.append(
+                            {
+                                "time": ts_epoch,
+                                "open": round(float(candle.get("open", 0.0)), 2),
+                                "high": round(float(candle.get("high", 0.0)), 2),
+                                "low": round(float(candle.get("low", 0.0)), 2),
+                                "close": round(float(candle.get("close", 0.0)), 2),
+                                "volume": int(float(candle.get("volume", 0) or 0)),
+                                "session": candle_session,
+                            }
+                        )
+                    candles = normalized
+                    source = "kis_daytime" if prefer_daytime else "kis_intraday"
                 except Exception:
-                    daytime_candles = []
-                if daytime_candles:
-                    for candle in daytime_candles:
-                        candle["session"] = "daytime"
+                    candles = []
+                    source = "none"
 
-            use_yf_data = session_filter != "daytime"
-            if use_yf_data:
+            if not is_intraday and not candles:
+                import pandas as pd
+                import yfinance as yf
                 ticker = yf.Ticker(symbol)
                 use_prepost: bool = interval not in ("1d", "1wk", "1mo")
                 hist = ticker.history(period=period, interval=interval, prepost=use_prepost)
                 if not hist.empty:
                     if is_intraday:
+                        us_candles: list = []
                         for ts, row in hist.iterrows():
                             ts_epoch = int(pd.Timestamp(ts).timestamp())
                             us_session = classify_us_session(ts_epoch)
@@ -166,9 +199,10 @@ def create_chart_router(
                                     "session": us_session,
                                 }
                             )
+                        candles = us_candles
                     else:
-                        timestamps: pd.Series = hist.index.astype("int64") // 10**9
-                        us_candles = (
+                        timestamps = hist.index.astype("int64") // 10**9
+                        candles = (
                             pd.DataFrame(
                                 {
                                     "time": timestamps,
@@ -183,20 +217,6 @@ def create_chart_router(
                             .to_dict("records")
                         )
                         session_applied = False
-
-            if session_filter == "daytime":
-                candles = daytime_candles
-                source = "kis_daytime" if candles else "none"
-            elif session_filter == "all" and is_intraday and daytime_candles:
-                merged_by_time: Dict[int, Dict[str, Any]] = {}
-                for item in us_candles:
-                    merged_by_time[item["time"]] = item
-                for item in daytime_candles:
-                    merged_by_time[item["time"]] = item
-                candles = [merged_by_time[key] for key in sorted(merged_by_time.keys())]
-                source = "kis_daytime+yfinance"
-            else:
-                candles = us_candles
                 source = "yfinance"
 
             trades = [trade for trade in get_trade_entries() if trade.get("symbol") == symbol]

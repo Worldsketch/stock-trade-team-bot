@@ -7,7 +7,7 @@ import requests
 from typing import Dict, Any, Optional, List, Tuple
 import ccxt
 
-def retry_api(max_retries: int = 3) -> Any:
+def retry_api(max_retries: int = 3, delay_sec: float = 1.0) -> Any:
     def decorator(func: Any) -> Any:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             for attempt in range(max_retries):
@@ -16,11 +16,13 @@ def retry_api(max_retries: int = 3) -> Any:
                 except requests.exceptions.RequestException as e:
                     if attempt == max_retries - 1:
                         raise ccxt.NetworkError(f"API 네트워크 오류 발생: {str(e)}")
-                    time.sleep(1)
+                    if delay_sec > 0:
+                        time.sleep(delay_sec)
                 except Exception as e:
                     if attempt == max_retries - 1:
                         raise ccxt.ExchangeError(f"API 거래소 오류 발생: {str(e)}")
-                    time.sleep(1)
+                    if delay_sec > 0:
+                        time.sleep(delay_sec)
         return wrapper
     return decorator
 
@@ -38,8 +40,10 @@ class KoreaInvestmentAPI:
         self._token_fail_ts: float = 0.0
 
         self._exchange_cache: Dict[str, str] = {}
+        self._quote_cache: Dict[str, Dict[str, float]] = {}
         self._EXCHANGE_MAP: Dict[str, str] = {"NAS": "NASD", "NYS": "NYSE", "AMS": "AMEX"}
         self._DAYTIME_EXCD_MAP: Dict[str, str] = {"NAS": "BAQ", "NYS": "BAY", "AMS": "BAA"}
+        self._quote_cache_ttl_sec: float = 2.0
         daytime_flag: str = os.getenv("KIS_ENABLE_DAYTIME_TRADING", "true").strip().lower()
         self.enable_daytime_trading: bool = daytime_flag not in ("0", "false", "off", "no")
 
@@ -57,7 +61,7 @@ class KoreaInvestmentAPI:
         for excd in ("NAS", "NYS", "AMS"):
             try:
                 params: Dict[str, str] = {"AUTH": "", "EXCD": excd, "SYMB": symbol}
-                res = requests.get(url, headers=headers, params=params)
+                res = requests.get(url, headers=headers, params=params, timeout=(0.8, 1.5))
                 if res.status_code == 200:
                     data = res.json()
                     price = float(data.get("output", {}).get("last", 0))
@@ -79,7 +83,7 @@ class KoreaInvestmentAPI:
             "appsecret": self.app_secret
         }
         try:
-            res = requests.post(url, json=payload)
+            res = requests.post(url, json=payload, timeout=(2.0, 4.0))
             if res.status_code != 200:
                 print(f"[토큰 발급 실패] HTTP 상태 코드: {res.status_code}")
                 print(f"[토큰 발급 응답 데이터] {res.text}")
@@ -141,7 +145,7 @@ class KoreaInvestmentAPI:
             return ["NASD"]
         return list(excg_set)
 
-    @retry_api(max_retries=3)
+    @retry_api(max_retries=2, delay_sec=0.2)
     def get_balance_and_positions(self, item_cd: str = "AAPL", symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         if self.is_mock:
             # 모의투자는 기존 VTTT3012R 사용
@@ -207,7 +211,7 @@ class KoreaInvestmentAPI:
                     "OVRS_ORD_UNPR": "1",
                     "ITEM_CD": item_cd
                 }
-                bal_res = requests.get(bal_url, headers=bal_headers, params=bal_params)
+                bal_res = requests.get(bal_url, headers=bal_headers, params=bal_params, timeout=(2.0, 4.0))
                 bal_res.raise_for_status()
                 bal_data = bal_res.json()
                 if bal_data.get('rt_cd') == '0' and isinstance(bal_data.get('output'), dict):
@@ -230,7 +234,7 @@ class KoreaInvestmentAPI:
                     "CMA_EVLU_AMT_ICLD_YN": "Y",
                     "OVRS_ICLD_YN": "Y"
                 }
-                krw_res = requests.get(krw_url, headers=krw_headers, params=krw_params)
+                krw_res = requests.get(krw_url, headers=krw_headers, params=krw_params, timeout=(2.0, 4.0))
                 krw_res.raise_for_status()
                 krw_data = krw_res.json()
                 if krw_data.get('rt_cd') == '0' and isinstance(krw_data.get('output'), dict):
@@ -255,7 +259,7 @@ class KoreaInvestmentAPI:
                         "CTX_AREA_FK200": "",
                         "CTX_AREA_NK200": ""
                     }
-                    pos_res = requests.get(pos_url, headers=pos_headers, params=pos_params)
+                    pos_res = requests.get(pos_url, headers=pos_headers, params=pos_params, timeout=(2.0, 4.0))
                     pos_res.raise_for_status()
                     pos_data = pos_res.json()
                     if pos_data.get('rt_cd') == '0' and isinstance(pos_data.get('output1'), list):
@@ -324,12 +328,19 @@ class KoreaInvestmentAPI:
     def get_usd_balance(self) -> float:
         return self.get_balance_and_positions()["usd_balance"]
 
-    @retry_api(max_retries=3)
+    @retry_api(max_retries=2, delay_sec=0.15)
     def get_current_price(self, symbol: str, prefer_daytime: bool = False) -> float:
         url: str = f"{self.base_url}/uapi/overseas-price/v1/quotations/price"
         headers: Dict[str, str] = self.get_headers("HHDFS00000300")
         short_excd: str = self._get_exchange_code(symbol, "short")
         should_try_daytime: bool = prefer_daytime or self._is_daytime_window_open()
+        cache_key = f"{symbol}_{'day' if should_try_daytime else 'regular'}"
+        cached_quote = self._quote_cache.get(cache_key)
+        now_ts = time.time()
+        if cached_quote and (now_ts - cached_quote.get("ts", 0.0)) < self._quote_cache_ttl_sec:
+            cached_price = float(cached_quote.get("price", 0.0))
+            if cached_price > 0:
+                return cached_price
 
         excd_candidates: List[str] = []
         if should_try_daytime:
@@ -346,18 +357,19 @@ class KoreaInvestmentAPI:
                 "EXCD": excd,
                 "SYMB": symbol
             }
-            res = requests.get(url, headers=headers, params=params)
+            res = requests.get(url, headers=headers, params=params, timeout=(1.0, 2.0))
             res.raise_for_status()
             try:
                 data = res.json()
                 price = float(data.get('output', {}).get('last', 0))
                 if price > 0:
+                    self._quote_cache[cache_key] = {"price": price, "ts": now_ts}
                     return price
             except (KeyError, ValueError, TypeError):
                 continue
         return 0.0
 
-    @retry_api(max_retries=3)
+    @retry_api(max_retries=2, delay_sec=0.15)
     def get_intraday_candles(
         self,
         symbol: str,
@@ -447,7 +459,7 @@ class KoreaInvestmentAPI:
             "ORD_DVSN": ord_dvsn
         }
         print(f"[주문 요청] {mode_label} {tr_id} | {symbol} ({excg_cd}) {'매수' if is_buy else '매도'} {int(quantity)}주 @ ${formatted_price}")
-        res = requests.post(url, headers=headers, json=payload)
+        res = requests.post(url, headers=headers, json=payload, timeout=(2.0, 6.0))
         
         try:
             data: Dict[str, Any] = res.json()
@@ -467,7 +479,7 @@ class KoreaInvestmentAPI:
             
         return True
 
-    @retry_api(max_retries=3)
+    @retry_api(max_retries=2, delay_sec=0.2)
     def get_pending_orders(self, symbols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         orders: List[Dict[str, Any]] = []
         seen_order_keys: set = set()
@@ -485,7 +497,7 @@ class KoreaInvestmentAPI:
                     "CTX_AREA_FK200": "",
                     "CTX_AREA_NK200": ""
                 }
-                res = requests.get(url, headers=headers, params=params)
+                res = requests.get(url, headers=headers, params=params, timeout=(1.5, 3.0))
                 try:
                     data: Dict[str, Any] = res.json()
                 except Exception:
@@ -545,7 +557,7 @@ class KoreaInvestmentAPI:
                 "OVRS_ORD_UNPR": "0",
                 "ORD_SVR_DVSN_CD": "0"
             }
-            res = requests.post(url, headers=headers, json=payload)
+            res = requests.post(url, headers=headers, json=payload, timeout=(2.0, 6.0))
             try:
                 data: Dict[str, Any] = res.json()
             except Exception:

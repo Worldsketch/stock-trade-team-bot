@@ -184,7 +184,6 @@
                     <div class="flex gap-2 flex-wrap justify-end">
                         <div id="chartPeriodGroup" class="flex bg-slate-900/60 rounded-lg p-0.5 gap-0.5">
                             <button onclick="setChartPeriod('1d','5m')" data-period="1d" class="chart-period-btn active px-2 py-1 text-[11px] font-medium rounded-md transition-all">분</button>
-                            <button onclick="setChartPeriod('1mo','1d')" data-period="1mo" class="chart-period-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">일</button>
                             <button onclick="setChartPeriod('1y','1d')" data-period="1y" class="chart-period-btn px-2 py-1 text-[11px] font-medium rounded-md transition-all">연</button>
                         </div>
                         <div id="chartBtnGroup" class="flex bg-slate-900/60 rounded-lg p-0.5 gap-0.5 flex-wrap">
@@ -556,6 +555,9 @@
         const POLL_SLOW_THRESHOLD_MS = 2500;
         const CHART_CLIENT_CACHE_INTRADAY_MS = 20000;
         const CHART_CLIENT_CACHE_DAILY_MS = 300000;
+        const INITIAL_PENDING_DELAY_MS = 1200;
+        const INITIAL_CHART_DELAY_MS = 350;
+        const INITIAL_QUOTE_DELAY_MS = 700;
 
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/static/sw.js').catch(() => {});
@@ -1010,9 +1012,9 @@
             const gen = _pollGeneration;
             clearPollTimers();
             runStatusPoll(gen);
-            runPendingPoll(gen);
-            runChartPoll(gen);
-            runQuotePoll(gen);
+            _pendingTimer = setTimeout(() => runPendingPoll(gen), INITIAL_PENDING_DELAY_MS);
+            _chartTimer = setTimeout(() => runChartPoll(gen), INITIAL_CHART_DELAY_MS);
+            _quoteTimer = setTimeout(() => runQuotePoll(gen), INITIAL_QUOTE_DELAY_MS);
         }
 
         async function fetchStatus() {

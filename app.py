@@ -28,7 +28,7 @@ bot_instance: Optional[TradingBot] = None
 bot_thread: Optional[threading.Thread] = None
 _status_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
 _strategy_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
-_realized_pnl: RealizedPnlCalculator = RealizedPnlCalculator(cache_ttl_seconds=60.0, trade_file="trade_log.json")
+_realized_pnl: RealizedPnlCalculator = RealizedPnlCalculator(cache_ttl_seconds=180.0, trade_file="trade_log.json")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

@@ -14,6 +14,24 @@ def create_status_router(
     realized_pnl: RealizedPnlCalculator,
 ) -> APIRouter:
     router = APIRouter()
+    slot_price_cache: Dict[str, Dict[str, float]] = {}
+    slot_price_ttl_sec: float = 15.0
+
+    def _get_cached_slot_price(symbol: str, now_ts: float) -> float:
+        cached = slot_price_cache.get(symbol)
+        if not cached:
+            return 0.0
+        if (now_ts - cached.get("ts", 0.0)) > slot_price_ttl_sec:
+            return 0.0
+        return float(cached.get("price", 0.0))
+
+    def _set_cached_slot_price(symbol: str, price: float, now_ts: float) -> None:
+        if price <= 0:
+            return
+        slot_price_cache[symbol] = {"price": float(price), "ts": now_ts}
+        if len(slot_price_cache) > 64:
+            oldest_symbol = min(slot_price_cache.keys(), key=lambda s: slot_price_cache[s].get("ts", 0.0))
+            slot_price_cache.pop(oldest_symbol, None)
 
     @router.get("/api/status")
     async def get_status(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
@@ -26,14 +44,20 @@ def create_status_router(
             return status_cache["data"]
 
         try:
+            started_at: float = time.perf_counter()
             item_code: str = bot.symbols[0] if bot.symbols else "AAPL"
             data: Dict[str, Any] = bot.api.get_balance_and_positions(item_cd=item_code, symbols=bot.symbols)
-            is_daytime_session: bool = bot.is_daytime_market_open(bot.get_korean_time())
-            current_symbols: list = bot.symbols
+            balance_done_at: float = time.perf_counter()
+            now_kst = bot.get_korean_time()
+            now_et = bot.get_eastern_time()
+            is_daytime_session: bool = bot.is_daytime_market_open(now_kst)
+            current_symbols: list = list(bot.symbols)
             positions_list: list = []
             held_symbols: set = set()
+            quote_refresh_budget: int = 1
 
             active_slots = bot.slot_manager.get_active_slots()
+            slot_map: Dict[str, Dict[str, Any]] = {slot.get("symbol"): slot for slot in active_slots}
             sorted_positions = sorted(
                 data.get("positions", []),
                 key=lambda p: (
@@ -50,18 +74,21 @@ def create_status_router(
                 if symbol in held_symbols:
                     continue
                 held_symbols.add(symbol)
-                current_price: float = pos.get("current_price", 0.0)
-                if is_daytime_session:
-                    try:
-                        current_price = bot.api.get_current_price(symbol, prefer_daytime=True)
-                    except Exception:
-                        pass
-                elif current_price <= 0:
-                    try:
-                        current_price = bot.api.get_current_price(symbol)
-                    except Exception:
-                        pass
-                slot_info = next((slot for slot in active_slots if slot["symbol"] == symbol), {})
+                current_price: float = float(pos.get("current_price", 0.0) or 0.0)
+                if current_price > 0:
+                    _set_cached_slot_price(symbol, current_price, now)
+                else:
+                    cached_price = _get_cached_slot_price(symbol, now)
+                    if cached_price > 0:
+                        current_price = cached_price
+                    elif quote_refresh_budget > 0:
+                        quote_refresh_budget -= 1
+                        try:
+                            current_price = float(bot.api.get_current_price(symbol, prefer_daytime=is_daytime_session) or 0.0)
+                            _set_cached_slot_price(symbol, current_price, now)
+                        except Exception:
+                            pass
+                slot_info = slot_map.get(symbol, {})
                 base_symbol: str = slot_info.get("base_asset", symbol)
                 positions_list.append(
                     {
@@ -83,12 +110,15 @@ def create_status_router(
             for symbol in current_symbols:
                 if symbol in held_symbols:
                     continue
-                slot_info = next((slot for slot in active_slots if slot["symbol"] == symbol), {})
-                fallback_price: float = 0.0
-                try:
-                    fallback_price = bot.api.get_current_price(symbol, prefer_daytime=is_daytime_session)
-                except Exception:
-                    pass
+                slot_info = slot_map.get(symbol, {})
+                fallback_price: float = _get_cached_slot_price(symbol, now)
+                if fallback_price <= 0 and quote_refresh_budget > 0:
+                    quote_refresh_budget -= 1
+                    try:
+                        fallback_price = float(bot.api.get_current_price(symbol, prefer_daytime=is_daytime_session) or 0.0)
+                        _set_cached_slot_price(symbol, fallback_price, now)
+                    except Exception:
+                        pass
                 base_symbol = slot_info.get("base_asset", symbol)
                 positions_list.append(
                     {
@@ -139,12 +169,21 @@ def create_status_router(
                 "realized_pnl": realized_pnl.calculate(),
                 "slots": active_slots,
                 "max_slots": bot.slot_manager.max_slots,
-                "market_open": bot.is_active_trading_time(bot.get_eastern_time()),
-                "daytime_open": bot.is_daytime_market_open(bot.get_korean_time()),
-                "is_dst": bool(bot.get_eastern_time().dst()),
-                "et_time": bot.get_eastern_time().strftime("%H:%M"),
-                "kst_time": bot.get_korean_time().strftime("%H:%M"),
+                "market_open": bot.is_active_trading_time(now_et),
+                "daytime_open": is_daytime_session,
+                "is_dst": bool(now_et.dst()),
+                "et_time": now_et.strftime("%H:%M"),
+                "kst_time": now_kst.strftime("%H:%M"),
             }
+            total_ms: float = (time.perf_counter() - started_at) * 1000.0
+            if total_ms >= 1200:
+                balance_ms: float = (balance_done_at - started_at) * 1000.0
+                compose_ms: float = total_ms - balance_ms
+                print(
+                    f"[status 느림] total={total_ms:.0f}ms "
+                    f"(balance={balance_ms:.0f}ms, compose={compose_ms:.0f}ms) "
+                    f"slots={len(current_symbols)} held={len(held_symbols)}"
+                )
         except Exception as error:
             try:
                 result = bot.get_status()
