@@ -236,7 +236,7 @@ def create_chart_router(
         session = resolve_live_session(bot)
         cache_key = f"{symbol}_{session}"
         now = time.time()
-        ttl = 3.0
+        ttl = 1.0
         cached = quote_cache.get(cache_key)
         if cached and (now - cached["ts"]) < ttl:
             return cached["data"]
@@ -245,11 +245,11 @@ def create_chart_router(
         source = "kis_quote"
         if bot:
             if live_data_cache:
-                price = live_data_cache.get_price_from_portfolio(symbol, ttl_sec=3.0)
+                price = live_data_cache.get_price_from_portfolio(symbol, ttl_sec=1.0)
                 if price > 0:
                     source = "shared_portfolio"
             if price <= 0:
-                bot_snapshot = bot.get_live_snapshot(max_age_sec=12.0)
+                bot_snapshot = bot.get_live_snapshot(max_age_sec=4.0)
                 if bot_snapshot:
                     for pos in bot_snapshot.get("positions", []) or []:
                         if str(pos.get("symbol", "")).upper() != symbol.upper():

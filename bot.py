@@ -155,7 +155,7 @@ class TradingBot:
         self._live_snapshot_lock = threading.Lock()
         self._live_snapshot: Dict[str, Any] = {}
         self._last_live_snapshot_ts: float = 0.0
-        self._live_snapshot_interval_sec: float = 5.0
+        self._live_snapshot_interval_sec: float = 3.0
         
         # 수동 매도 후 매수 차단 (타임스탬프)
         self.manual_sell_block: Dict[str, float] = {}

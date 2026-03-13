@@ -549,8 +549,12 @@
         let _quoteTimer = null;
         let _pollGeneration = 0;
         let _pollRiskUntil = 0;
-        const POLL_NORMAL_MS = 3000;
-        const POLL_RISK_MS = 6000;
+        const POLL_STATUS_NORMAL_MS = 2500;
+        const POLL_STATUS_RISK_MS = 6000;
+        const POLL_PENDING_NORMAL_MS = 3000;
+        const POLL_PENDING_RISK_MS = 6000;
+        const POLL_QUOTE_NORMAL_MS = 1000;
+        const POLL_QUOTE_RISK_MS = 2000;
         const POLL_CHART_NORMAL_MS = 60000;
         const POLL_CHART_RISK_MS = 120000;
         const POLL_RISK_HOLD_MS = 60000;
@@ -979,7 +983,7 @@
             _pollRiskUntil = Math.max(_pollRiskUntil, Date.now() + POLL_RISK_HOLD_MS);
             const liveIndicator = document.getElementById('chartLiveIndicator');
             if (liveIndicator) {
-                liveIndicator.title = `폴링 보호모드(6초) 활성: ${reason || '응답 지연/실패 감지'}`;
+                liveIndicator.title = `폴링 보호모드 활성(상태/미체결 6초, 현재가 2초): ${reason || '응답 지연/실패 감지'}`;
             }
         }
 
@@ -996,7 +1000,13 @@
             if (kind === 'chart') {
                 return isPollRiskMode() ? POLL_CHART_RISK_MS : POLL_CHART_NORMAL_MS;
             }
-            return isPollRiskMode() ? POLL_RISK_MS : POLL_NORMAL_MS;
+            if (kind === 'quote') {
+                return isPollRiskMode() ? POLL_QUOTE_RISK_MS : POLL_QUOTE_NORMAL_MS;
+            }
+            if (kind === 'pending') {
+                return isPollRiskMode() ? POLL_PENDING_RISK_MS : POLL_PENDING_NORMAL_MS;
+            }
+            return isPollRiskMode() ? POLL_STATUS_RISK_MS : POLL_STATUS_NORMAL_MS;
         }
 
         function clearPollTimers() {

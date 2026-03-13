@@ -17,7 +17,7 @@ def create_status_router(
 ) -> APIRouter:
     router = APIRouter()
     slot_price_cache: Dict[str, Dict[str, float]] = {}
-    slot_price_ttl_sec: float = 15.0
+    slot_price_ttl_sec: float = 5.0
 
     def _get_cached_slot_price(symbol: str, now_ts: float) -> float:
         cached = slot_price_cache.get(symbol)
@@ -42,12 +42,12 @@ def create_status_router(
             return {"error": "Bot is not initialized."}
 
         now: float = time.time()
-        if status_cache["data"] and (now - status_cache["ts"]) < 3:
+        if status_cache["data"] and (now - status_cache["ts"]) < 2:
             return status_cache["data"]
 
         try:
             started_at: float = time.perf_counter()
-            bot_snapshot: Optional[Dict[str, Any]] = bot.get_live_snapshot(max_age_sec=12.0)
+            bot_snapshot: Optional[Dict[str, Any]] = bot.get_live_snapshot(max_age_sec=6.0)
             if bot_snapshot:
                 positions_list = list(bot_snapshot.get("positions", []))
                 if live_data_cache:
@@ -111,7 +111,7 @@ def create_status_router(
             item_code: str = bot.symbols[0] if bot.symbols else "AAPL"
             data: Optional[Dict[str, Any]] = None
             if live_data_cache:
-                data = live_data_cache.get_portfolio(ttl_sec=3.0)
+                data = live_data_cache.get_portfolio(ttl_sec=2.0)
             if not data:
                 data = bot.api.get_balance_and_positions(item_cd=item_code, symbols=bot.symbols)
                 if live_data_cache:
