@@ -828,6 +828,13 @@
         function fmtUsd(v) { return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}); }
         function fmtKrw(v) { return Math.round(v).toLocaleString() + '원'; }
         function retColor(v) { return v > 0 ? 'text-emerald-400' : (v < 0 ? 'text-rose-400' : 'text-slate-400'); }
+        function getUsSessionRanges(dst) {
+            return {
+                pre: dst ? '17:00 ~ 22:30' : '18:00 ~ 23:30',
+                reg: dst ? '22:30 ~ 05:00' : '23:30 ~ 06:00',
+                aft: dst ? '05:00 ~ 09:00' : '06:00 ~ 10:00',
+            };
+        }
 
         function updateUI(data) {
             if (data.slots) {
@@ -837,7 +844,7 @@
                 document.getElementById('slotCount').textContent = currentSlots.length;
                 document.getElementById('slotMax').textContent = maxSlots;
                 const addBtn = document.getElementById('addSlotBtn');
-                const marketOpen = data.market_open === true;
+                const marketOpen = (data.market_open === true) || (data.daytime_open === true);
                 if (currentSlots.length >= maxSlots) {
                     addBtn.classList.add('opacity-50', 'pointer-events-none');
                     addBtn.title = '슬롯 가득 참';
@@ -1066,16 +1073,28 @@
         }
 
         function isMarketTradable() {
+            const byServerUs = lastData?.market_open === true;
+            const byServerDay = lastData?.daytime_open === true;
+            if (byServerDay) return { open: true, session: '데이장', desc: '주간거래 지정가 (현재가 -0.5%)' };
+            if (byServerUs) return { open: true, session: '미국장', desc: '미국장 주문' };
+
+            // 서버 상태 수신 전/예외 시 브라우저 시간 기준 폴백
             const now = new Date();
+            const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+            const kDay = kst.getDay();
+            const kMin = kst.getHours() * 60 + kst.getMinutes();
+            if (kDay >= 1 && kDay <= 5 && kMin >= 540 && kMin < 960) {
+                return { open: true, session: '데이장', desc: '주간거래 지정가 (현재가 -0.5%)' };
+            }
+
             const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
             const day = et.getDay();
-            const h = et.getHours();
-            const m = et.getMinutes();
-            const t = h * 60 + m;
-            if (day === 0 || day === 6) return { open: false, reason: '주말' };
-            if (t >= 240 && t < 570) return { open: true, session: '프리마켓', desc: '지정가 (현재가 -0.5%)' };
-            if (t >= 570 && t < 960) return { open: true, session: '정규장', desc: '시장가 (하한 -2%)' };
-            if (t >= 960 && t < 1200) return { open: true, session: '애프터마켓', desc: '지정가 (현재가 -0.5%)' };
+            const t = et.getHours() * 60 + et.getMinutes();
+            if (day !== 0 && day !== 6) {
+                if (t >= 240 && t < 570) return { open: true, session: '프리마켓', desc: '지정가 (현재가 -0.5%)' };
+                if (t >= 570 && t < 960) return { open: true, session: '정규장', desc: '시장가 (하한 -2%)' };
+                if (t >= 960 && t < 1200) return { open: true, session: '애프터마켓', desc: '지정가 (현재가 -0.5%)' };
+            }
             return { open: false, reason: '장 마감 시간' };
         }
 
@@ -1086,20 +1105,23 @@
                 const inner = modal.querySelector('.bg-slate-800');
                 const now = new Date();
                 const etStr = now.toLocaleString('ko-KR', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
-                const kstStr = now.toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
+                const kstStr = now.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hour12: false });
+                const dst = lastData?.is_dst === true;
+                const ranges = getUsSessionRanges(dst);
                 inner.innerHTML = `
                     <div class="px-6 py-8 text-center">
                         <div class="w-14 h-14 rounded-full bg-amber-500/15 flex items-center justify-center mx-auto mb-4">
                             <i class="fa-solid fa-clock text-amber-400 text-xl"></i>
                         </div>
                         <p class="text-white font-bold text-lg mb-2">현재 거래할 수 없습니다</p>
-                        <p class="text-slate-400 text-sm mb-5">${market.reason} (미국 동부시간 ${etStr})</p>
+                        <p class="text-slate-400 text-sm mb-5">${market.reason} (미국 동부시간 ${etStr} / 한국시간 ${kstStr})</p>
                         <div class="bg-slate-900/60 rounded-xl p-4 text-left space-y-2 mb-6">
                             <p class="text-[11px] text-slate-500 font-semibold mb-1">거래 가능 시간 (한국시간 기준)</p>
-                            <div class="flex justify-between text-xs"><span class="text-slate-400">프리마켓</span><span class="text-slate-300">18:00 ~ 23:30</span></div>
-                            <div class="flex justify-between text-xs"><span class="text-slate-400">정규장</span><span class="text-emerald-400 font-semibold">23:30 ~ 06:00</span></div>
-                            <div class="flex justify-between text-xs"><span class="text-slate-400">애프터마켓</span><span class="text-slate-300">06:00 ~ 10:00</span></div>
-                            <p class="text-[10px] text-slate-600 mt-1">* 썸머타임 시 1시간 앞당겨집니다</p>
+                            <div class="flex justify-between text-xs"><span class="text-slate-400">데이장</span><span class="text-cyan-300">09:00 ~ 16:00</span></div>
+                            <div class="flex justify-between text-xs"><span class="text-slate-400">프리마켓</span><span class="text-slate-300">${ranges.pre}</span></div>
+                            <div class="flex justify-between text-xs"><span class="text-slate-400">정규장</span><span class="text-emerald-400 font-semibold">${ranges.reg}</span></div>
+                            <div class="flex justify-between text-xs"><span class="text-slate-400">애프터마켓</span><span class="text-slate-300">${ranges.aft}</span></div>
+                            <p class="text-[10px] text-slate-600 mt-1">* 미국장 시간은 서머타임 자동 반영</p>
                         </div>
                         <button onclick="closeSellModal()" class="w-full bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium py-3 rounded-xl transition-colors">닫기</button>
                     </div>`;
@@ -1613,25 +1635,25 @@
         }
 
         function openAddSlotModal() {
-            const marketOpen = lastData?.market_open === true;
+            const marketOpen = (lastData?.market_open === true) || (lastData?.daytime_open === true);
             if (!marketOpen) {
                 const dst = lastData?.is_dst === true;
                 const etTime = lastData?.et_time || '';
-                const pre = dst ? '17:00 ~ 22:30' : '18:00 ~ 23:30';
-                const reg = dst ? '22:30 ~ 05:00' : '23:30 ~ 06:00';
-                const aft = dst ? '05:00 ~ 09:00' : '06:00 ~ 10:00';
+                const kstTime = lastData?.kst_time || '';
+                const ranges = getUsSessionRanges(dst);
                 const dstNote = dst ? '현재 서머타임 적용 중' : '현재 겨울 시간 적용 중';
                 document.getElementById('marketClosedContent').innerHTML = `
                     <div class="w-14 h-14 rounded-full bg-amber-500/15 flex items-center justify-center mx-auto mb-4">
                         <i class="fa-solid fa-clock text-amber-400 text-2xl"></i>
                     </div>
                     <h3 class="text-lg font-bold text-white mb-2">현재 거래할 수 없습니다</h3>
-                    <p class="text-sm text-slate-400 mb-4">장 마감 시간 (미국 동부시간 ${etTime})</p>
+                    <p class="text-sm text-slate-400 mb-4">장 마감 시간 (미국 동부시간 ${etTime} / 한국시간 ${kstTime})</p>
                     <div class="bg-slate-900/60 rounded-xl p-4 text-left mb-5 space-y-2">
                         <p class="text-xs font-semibold text-slate-500 mb-2">거래 가능 시간 (한국시간 기준)</p>
-                        <div class="flex justify-between"><span class="text-xs text-slate-400">프리마켓</span><span class="text-xs text-slate-300">${pre}</span></div>
-                        <div class="flex justify-between"><span class="text-xs text-slate-400">정규장</span><span class="text-xs font-bold text-emerald-400">${reg}</span></div>
-                        <div class="flex justify-between"><span class="text-xs text-slate-400">애프터마켓</span><span class="text-xs text-slate-300">${aft}</span></div>
+                        <div class="flex justify-between"><span class="text-xs text-slate-400">데이장</span><span class="text-xs text-cyan-300">09:00 ~ 16:00</span></div>
+                        <div class="flex justify-between"><span class="text-xs text-slate-400">프리마켓</span><span class="text-xs text-slate-300">${ranges.pre}</span></div>
+                        <div class="flex justify-between"><span class="text-xs text-slate-400">정규장</span><span class="text-xs font-bold text-emerald-400">${ranges.reg}</span></div>
+                        <div class="flex justify-between"><span class="text-xs text-slate-400">애프터마켓</span><span class="text-xs text-slate-300">${ranges.aft}</span></div>
                         <p class="text-[10px] text-slate-600 pt-1">* ${dstNote}</p>
                     </div>
                     <button onclick="closeMarketClosedModal()" class="w-full bg-slate-700 hover:bg-slate-600 text-white font-medium py-2.5 rounded-xl transition-colors">확인</button>`;
