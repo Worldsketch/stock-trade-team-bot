@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, List
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -164,15 +164,39 @@ app.include_router(
 
 
 @app.get("/api/strategy-params")
-async def get_strategy_params(username: str = Depends(get_current_username)) -> Dict[str, Any]:
+async def get_strategy_params(
+    snapshot: int = Query(default=0),
+    refresh: int = Query(default=0),
+    username: str = Depends(get_current_username),
+) -> Dict[str, Any]:
     global _strategy_cache
     if not bot_instance:
         return {"error": "Bot not initialized"}
 
     now: float = time.time()
+    use_snapshot: bool = snapshot == 1
+    force_refresh: bool = refresh == 1
     cached_market = _strategy_cache.get("market")
     cache_ttl: float = 30.0 if bot_instance.is_active_trading_time(bot_instance.get_eastern_time()) else 300.0
-    if cached_market and (now - _strategy_cache["ts"]) < cache_ttl:
+    if use_snapshot:
+        prev_close = dict(bot_instance.prev_close)
+        base_price = dict(cached_market.get("base_price", {})) if cached_market else {}
+        base_sma200 = dict(cached_market.get("base_sma200", {})) if cached_market else {}
+        etf_current_price = dict(cached_market.get("etf_current_price", {})) if cached_market else {}
+
+        bot_snapshot: Optional[Dict[str, Any]] = bot_instance.get_live_snapshot(max_age_sec=20.0)
+        if bot_snapshot:
+            for pos in bot_snapshot.get("positions", []) or []:
+                symbol = str(pos.get("symbol", "")).upper()
+                if not symbol:
+                    continue
+                try:
+                    current_price = float(pos.get("current_price", 0.0) or 0.0)
+                except Exception:
+                    current_price = 0.0
+                if current_price > 0:
+                    etf_current_price[symbol] = current_price
+    elif (not force_refresh) and cached_market and (now - _strategy_cache["ts"]) < cache_ttl:
         base_price, base_sma200, etf_current_price = cached_market["base_price"], cached_market["base_sma200"], cached_market["etf_current_price"]
         prev_close = cached_market["prev_close"]
     else:
@@ -229,6 +253,8 @@ async def get_strategy_params(username: str = Depends(get_current_username)) -> 
         "base_price": base_price,
         "base_sma200": base_sma200,
         "etf_current_price": etf_current_price,
+        "source": "snapshot" if use_snapshot else ("live_refresh" if force_refresh else "cache_or_live"),
+        "server_time": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%H:%M:%S"),
     }
 
 
