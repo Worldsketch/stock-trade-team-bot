@@ -134,6 +134,9 @@ class TradingBot:
         self.last_krw_balance: float = 0.0
         self.last_krw_cash: float = 0.0
         self.exchange_rate: float = 1400.0
+        self.display_exchange_rate: float = 1400.0
+        self._display_exchange_rate_ts: float = 0.0
+        self._display_exchange_rate_ttl_sec: float = 300.0
         self.tot_evlu_pfls: float = 0.0
         self.tot_pchs_amt: float = 0.0
         self.tot_stck_evlu: float = 0.0
@@ -648,8 +651,57 @@ class TradingBot:
             hist = ticker.history(period="1d")
             if not hist.empty:
                 self.exchange_rate = float(hist['Close'].iloc[-1])
+                if self.exchange_rate > 0:
+                    self.display_exchange_rate = self.exchange_rate
+                    self._display_exchange_rate_ts = time.time()
         except Exception:
             pass
+
+    def get_display_exchange_rate(self, force_refresh: bool = False) -> float:
+        now_ts: float = time.time()
+        if (
+            (not force_refresh)
+            and self.display_exchange_rate > 0
+            and (now_ts - self._display_exchange_rate_ts) < self._display_exchange_rate_ttl_sec
+        ):
+            return self.display_exchange_rate
+
+        market_rate: float = 0.0
+        try:
+            ticker = yf.Ticker("KRW=X")
+            try:
+                fast_info = getattr(ticker, "fast_info", None)
+                if fast_info:
+                    market_rate = float(
+                        fast_info.get("lastPrice")
+                        or fast_info.get("last_price")
+                        or fast_info.get("regularMarketPrice")
+                        or fast_info.get("regular_market_price")
+                        or 0.0
+                    )
+            except Exception:
+                market_rate = 0.0
+
+            if market_rate <= 0:
+                intraday = ticker.history(period="1d", interval="1m")
+                if not intraday.empty:
+                    market_rate = float(intraday["Close"].dropna().iloc[-1])
+
+            if market_rate <= 0:
+                daily = ticker.history(period="5d")
+                if not daily.empty:
+                    market_rate = float(daily["Close"].dropna().iloc[-1])
+        except Exception:
+            market_rate = 0.0
+
+        if market_rate > 0:
+            self.display_exchange_rate = market_rate
+            self._display_exchange_rate_ts = now_ts
+            return market_rate
+
+        if self.exchange_rate > 0:
+            return self.exchange_rate
+        return self.display_exchange_rate if self.display_exchange_rate > 0 else 1400.0
             
     def check_trend_and_momentum(self) -> None:
         """Strategy E: 기초자산 SMA200 필터 + RSI<30 과매도 감지 + 레버리지 ETF 전일종가 저장"""
@@ -1179,6 +1231,8 @@ class TradingBot:
         api_exrt: float = data.get("exchange_rate", 0.0)
         if api_exrt > 0:
             self.exchange_rate = api_exrt
+            if self.display_exchange_rate <= 0:
+                self.display_exchange_rate = api_exrt
 
         api_krw: float = data.get("krw_balance", 0.0)
         if api_krw > 0:

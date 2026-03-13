@@ -1159,6 +1159,7 @@
                 }
             }
             const rate = data.exchange_rate || 1400;
+            const displayRate = data.display_exchange_rate || rate;
             const usdBal = data.usd_balance || 0;
             const krwBal = data.krw_balance || 0;
             const krwCash = data.krw_cash || 0;
@@ -1172,8 +1173,8 @@
             }
             const totalStockUsdForTotal = (data.tot_stck_evlu && data.tot_stck_evlu > 0) ? data.tot_stck_evlu : positionsValue;
             const totalEquityUsd = usdBal + totalStockUsdForTotal;
-            // 총 자산은 미국자산(USD) 기준 합계에 환율을 곱해 계산 (한투 미국주식 총자산 기준에 최대한 일치)
-            const totalEquityKrw = (totalEquityUsd * rate) + krwCash;
+            // 총 자산 표시는 별도 시장환율(displayRate) 기준으로 환산 (한투 앱 표시에 근접)
+            const totalEquityKrw = (totalEquityUsd * displayRate) + krwCash;
             const totalRetRate = totalInvested > 0 ? (totalPl / totalInvested) * 100 : 0;
 
             const cashRatio = totalEquityUsd > 0 ? (usdBal / totalEquityUsd * 100) : 0;
