@@ -17,8 +17,11 @@ def _parse_env_rate(name: str, default: float = 0.0) -> float:
         return default
 
 
-SELL_FEE_RATE: float = _parse_env_rate("SELL_FEE_RATE", 0.0)
-SELL_TAX_RATE: float = _parse_env_rate("SELL_TAX_RATE", 0.0)
+def _get_sell_cost_rates() -> Dict[str, float]:
+    return {
+        "sell_fee_rate": _parse_env_rate("SELL_FEE_RATE", 0.0),
+        "sell_tax_rate": _parse_env_rate("SELL_TAX_RATE", 0.0),
+    }
 
 
 def create_status_router(
@@ -53,6 +56,9 @@ def create_status_router(
         bot = get_bot()
         if not bot:
             return {"error": "Bot is not initialized."}
+        rates = _get_sell_cost_rates()
+        sell_fee_rate = rates["sell_fee_rate"]
+        sell_tax_rate = rates["sell_tax_rate"]
 
         now: float = time.time()
         if status_cache["data"] and (now - status_cache["ts"]) < 2:
@@ -102,8 +108,8 @@ def create_status_router(
                     "is_dst": bool(now_et.dst()),
                     "et_time": now_et.strftime("%H:%M"),
                     "kst_time": now_kst.strftime("%H:%M"),
-                    "sell_fee_rate": SELL_FEE_RATE,
-                    "sell_tax_rate": SELL_TAX_RATE,
+                    "sell_fee_rate": sell_fee_rate,
+                    "sell_tax_rate": sell_tax_rate,
                     "source": "bot_snapshot",
                 }
                 status_cache["data"] = result
@@ -246,8 +252,8 @@ def create_status_router(
                 "is_dst": bool(now_et.dst()),
                 "et_time": now_et.strftime("%H:%M"),
                 "kst_time": now_kst.strftime("%H:%M"),
-                "sell_fee_rate": SELL_FEE_RATE,
-                "sell_tax_rate": SELL_TAX_RATE,
+                "sell_fee_rate": sell_fee_rate,
+                "sell_tax_rate": sell_tax_rate,
             }
             total_ms: float = (time.perf_counter() - started_at) * 1000.0
             if total_ms >= 1200:
@@ -266,8 +272,8 @@ def create_status_router(
                     "error": f"상태 조회 실패: {error}",
                     "is_running": False,
                     "positions": [],
-                    "sell_fee_rate": SELL_FEE_RATE,
-                    "sell_tax_rate": SELL_TAX_RATE,
+                    "sell_fee_rate": sell_fee_rate,
+                    "sell_tax_rate": sell_tax_rate,
                 }
 
         status_cache["data"] = result

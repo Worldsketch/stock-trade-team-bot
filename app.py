@@ -15,6 +15,9 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import uvicorn
 from dotenv import load_dotenv
 
+# 라우터/설정 모듈 import 전에 .env를 먼저 로드해 환경변수 의존 상수 초기화를 안전하게 맞춘다.
+load_dotenv()
+
 from api import KoreaInvestmentAPI
 from bot import TradingBot
 from routes.ai import create_ai_router

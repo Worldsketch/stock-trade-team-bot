@@ -1532,7 +1532,8 @@
             const curPrice = pos?.current_price || 0;
             const avgPrice = pos?.avg_price || 0;
             const rate = lastData?.exchange_rate || 1400;
-            const sellPrice = market.session === '정규장'
+            const isRegularSession = (market.session === '정규장' || market.session === '미국장');
+            const sellPrice = isRegularSession
                 ? Math.round((curPrice * 0.98) * 100) / 100
                 : Math.round((curPrice * 0.995) * 100) / 100;
             const estAmount = sellQty * sellPrice;
