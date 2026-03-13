@@ -142,6 +142,15 @@ def create_trading_router(
                             f"🔁 [수동매도 재호가] {symbol} 잔량 {remaining_qty}주 @ ${new_price:.2f} "
                             f"(현재가 기준 -{discount*100:.1f}%)"
                         )
+                    else:
+                        bot.send_telegram_message(
+                            f"⚠️ [수동매도 재호가 실패]\n종목: {symbol}\n잔량: {remaining_qty}주 ({label})\n"
+                            f"재주문가: ${new_price:.2f}\n수동으로 미체결 주문을 확인해주세요."
+                        )
+                        bot.log(
+                            f"⚠️ [수동매도 재호가 실패] {symbol} 잔량 {remaining_qty}주 @ ${new_price:.2f}"
+                        )
+                        return
 
                 # 마지막 재호가 이후 5분까지 모니터링
                 while (time.time() - start_ts) < SMART_SELL_MONITOR_SEC:
