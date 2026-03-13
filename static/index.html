@@ -61,8 +61,6 @@
         .position-card { user-select: none; }
         .position-card.dragging { opacity: 0.55; border-style: dashed; }
         .position-card.drag-over { outline: 2px solid rgba(52, 211, 153, 0.65); outline-offset: 2px; }
-        .position-drag-handle { cursor: grab; color: #64748b; }
-        .position-drag-handle:active { cursor: grabbing; }
     </style>
 </head>
 <body class="bg-slate-900 text-slate-200 min-h-screen font-sans antialiased">
@@ -1240,11 +1238,8 @@
                                 <p data-field="base-asset" class="text-xs text-slate-500"></p>
                             </div>
                         </div>
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-center">
                             <span data-field="ret-badge" class="px-2.5 py-1 rounded-lg text-sm font-semibold">0.00%</span>
-                            <span class="position-drag-handle text-xs" title="드래그하여 순서 변경">
-                                <i class="fa-solid fa-grip-vertical"></i>
-                            </span>
                         </div>
                     </div>
                     <div class="flex justify-between items-center mb-4">
