@@ -1316,6 +1316,33 @@ class TradingBot:
             if elapsed_min >= 10:
                 to_remove.append(sym)
 
+        # 실제 삭제 전 전체 계좌를 재검증해 API 일시 이상으로 인한 오삭제를 방지
+        if to_remove:
+            try:
+                verify_item_cd: str = self.symbols[0] if self.symbols else "AAPL"
+                verify_data: Dict[str, Any] = self.api.get_balance_and_positions(
+                    item_cd=verify_item_cd,
+                    symbols=["__ALL__"],
+                )
+                account_held_symbols: Set[str] = {
+                    str(pos.get("symbol", "")).upper()
+                    for pos in verify_data.get("positions", [])
+                    if float(pos.get("quantity", 0.0) or 0.0) > 0
+                }
+                if (not account_held_symbols) and self.tot_stck_evlu > 100:
+                    self.log("⚠️ [자동 정리 보류] 전체계좌 재확인 결과가 비정상(보유 0)으로 보여 삭제를 건너뜁니다.", send_tg=False)
+                    return
+                filtered_remove: List[str] = []
+                for sym in to_remove:
+                    if sym in account_held_symbols:
+                        self.log(f"🛡️ [자동 정리 방지] {sym} 전체계좌 조회에서 보유 확인", send_tg=False)
+                        continue
+                    filtered_remove.append(sym)
+                to_remove = filtered_remove
+            except Exception as verify_error:
+                self.log(f"⚠️ [자동 정리 보류] 전체계좌 재확인 실패: {verify_error}", send_tg=False)
+                return
+
         for sym in to_remove:
             self.slot_manager.remove_slot(sym)
             self.is_uptrend.pop(sym, None)
