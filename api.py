@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import requests
@@ -38,6 +39,10 @@ class KoreaInvestmentAPI:
         self.access_token: str = ""
         self.token_expired_at: float = 0.0
         self._token_fail_ts: float = 0.0
+        self._token_lock = threading.Lock()
+        self._last_token_issue_ts: float = 0.0
+        # KIS tokenP 발급 제한(1초 1건) 보호용 최소 간격
+        self._token_min_issue_interval_sec: float = 1.1
 
         self._exchange_cache: Dict[str, str] = {}
         self._quote_cache: Dict[str, Dict[str, float]] = {}
@@ -116,13 +121,26 @@ class KoreaInvestmentAPI:
     def get_headers(self, tr_id: str) -> Dict[str, str]:
         now_kr: float = self.get_korean_time()
         if now_kr > self.token_expired_at:
-            if now_kr - self._token_fail_ts < 65:
-                raise Exception("토큰 발급 쿨다운 중 (65초 대기)")
-            try:
-                self._issue_token()
-            except Exception:
-                self._token_fail_ts = now_kr
-                raise
+            with self._token_lock:
+                # 다른 스레드가 이미 갱신했을 수 있으므로 락 안에서 재확인
+                now_kr = self.get_korean_time()
+                if now_kr > self.token_expired_at:
+                    if now_kr - self._token_fail_ts < 65:
+                        raise Exception("토큰 발급 쿨다운 중 (65초 대기)")
+
+                    # tokenP 1초 1건 제한 보호
+                    wait_sec: float = self._token_min_issue_interval_sec - (now_kr - self._last_token_issue_ts)
+                    if wait_sec > 0:
+                        time.sleep(wait_sec)
+
+                    try:
+                        self._issue_token()
+                        self._token_fail_ts = 0.0
+                    except Exception:
+                        self._token_fail_ts = self.get_korean_time()
+                        self._last_token_issue_ts = self._token_fail_ts
+                        raise
+                    self._last_token_issue_ts = self.get_korean_time()
             
         return {
             "content-type": "application/json; charset=utf-8",
