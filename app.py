@@ -576,5 +576,10 @@ async def stop_bot(username: str = Depends(get_current_username)) -> Dict[str, s
     return {"status": "already_stopped", "message": "이미 중지되어 있습니다."}
 
 if __name__ == "__main__":
-    print("\n🚀 대시보드 주소: http://localhost:8000")
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    app_host: str = os.getenv("APP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        app_port: int = int(os.getenv("APP_PORT", "8000").strip())
+    except Exception:
+        app_port = 8000
+    print(f"\n🚀 대시보드 로컬 주소: http://{app_host}:{app_port}")
+    uvicorn.run("app:app", host=app_host, port=app_port, reload=False)
