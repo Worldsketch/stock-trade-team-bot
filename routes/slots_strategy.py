@@ -3,6 +3,7 @@ import json
 import os
 import time
 import zipfile
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
@@ -10,6 +11,12 @@ import requests
 from fastapi import APIRouter, Depends, Request
 
 from bot import LEVERAGED_ETF_MAP, TradingBot
+
+SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,14}$")
+
+
+def _is_valid_symbol(symbol: str) -> bool:
+    return bool(SYMBOL_PATTERN.fullmatch(str(symbol or "").strip().upper()))
 
 
 def create_slots_strategy_router(
@@ -199,6 +206,8 @@ def create_slots_strategy_router(
             return {"success": False, "message": "잘못된 요청입니다."}
         if not symbol:
             return {"success": False, "message": "종목 코드를 입력해주세요."}
+        if not _is_valid_symbol(symbol):
+            return {"success": False, "message": "종목 코드는 영문/숫자/.- 만 허용됩니다. (최대 15자)"}
         buy_percent: float = float(body.get("buy_percent", 0))
         result: Dict[str, Any] = bot.add_symbol(symbol, buy_percent=buy_percent)
         if result.get("success"):
@@ -218,6 +227,8 @@ def create_slots_strategy_router(
             return {"success": False, "message": "잘못된 요청입니다."}
         if not symbol:
             return {"success": False, "message": "종목 코드를 입력해주세요."}
+        if not _is_valid_symbol(symbol):
+            return {"success": False, "message": "종목 코드 형식이 올바르지 않습니다."}
         result: Dict[str, Any] = bot.remove_symbol(symbol, sell_all=sell_all)
         if result.get("success"):
             invalidate_status_cache()
@@ -260,6 +271,8 @@ def create_slots_strategy_router(
         query = symbol.strip().upper()
         if not query:
             return {"found": False, "message": "종목 코드를 입력해주세요."}
+        if not _is_valid_symbol(query):
+            return {"found": False, "message": "종목 코드 형식이 올바르지 않습니다."}
         _, by_symbol = _get_master_index()
         item = by_symbol.get(query)
         if not item:

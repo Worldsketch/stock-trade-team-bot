@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, List
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Depends, HTTPException, Query, status
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -67,20 +67,68 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="한국투자증권 자동매매 봇", lifespan=lifespan)
 security = HTTPBasic()
+_auth_fail_lock = threading.Lock()
+_auth_fail_state: Dict[str, Dict[str, float]] = {}
+_AUTH_FAIL_WINDOW_SEC: float = 300.0
+_AUTH_FAIL_MAX_COUNT: int = 8
+_AUTH_BLOCK_SEC: float = 900.0
 
-def get_current_username(credentials: HTTPBasicCredentials = Depends(security)):
+
+def _get_client_ip(request: Request) -> str:
+    xff: str = str(request.headers.get("x-forwarded-for", "")).strip()
+    if xff:
+        return xff.split(",")[0].strip()
+    if request.client and request.client.host:
+        return str(request.client.host)
+    return "unknown"
+
+
+def get_current_username(
+    request: Request,
+    credentials: HTTPBasicCredentials = Depends(security),
+):
     admin_user: str = os.getenv("ADMIN_USERNAME", "")
     admin_pass: str = os.getenv("ADMIN_PASSWORD", "")
     if not admin_user or not admin_pass:
         raise HTTPException(status_code=500, detail="ADMIN_USERNAME/ADMIN_PASSWORD 환경변수가 설정되지 않았습니다.")
+
+    ip: str = _get_client_ip(request)
+    now_ts: float = time.time()
+    with _auth_fail_lock:
+        state: Dict[str, float] = dict(_auth_fail_state.get(ip, {}))
+        first_ts: float = float(state.get("first_ts", now_ts))
+        if (now_ts - first_ts) > _AUTH_FAIL_WINDOW_SEC:
+            state = {"count": 0.0, "first_ts": now_ts, "blocked_until": 0.0}
+        blocked_until: float = float(state.get("blocked_until", 0.0))
+        _auth_fail_state[ip] = state
+    if blocked_until > now_ts:
+        remain: int = int(blocked_until - now_ts)
+        raise HTTPException(status_code=429, detail=f"로그인 시도 제한 중입니다. {remain}초 후 다시 시도하세요.")
+
     correct_username = secrets.compare_digest(credentials.username, admin_user)
     correct_password = secrets.compare_digest(credentials.password, admin_pass)
     if not (correct_username and correct_password):
+        time.sleep(0.15)
+        with _auth_fail_lock:
+            state = dict(_auth_fail_state.get(ip, {"count": 0.0, "first_ts": now_ts, "blocked_until": 0.0}))
+            first_ts = float(state.get("first_ts", now_ts))
+            if (now_ts - first_ts) > _AUTH_FAIL_WINDOW_SEC:
+                first_ts = now_ts
+                state["count"] = 0.0
+            state["first_ts"] = first_ts
+            state["count"] = float(state.get("count", 0.0)) + 1.0
+            if int(state["count"]) >= _AUTH_FAIL_MAX_COUNT:
+                state["blocked_until"] = now_ts + _AUTH_BLOCK_SEC
+                state["count"] = 0.0
+                state["first_ts"] = now_ts
+            _auth_fail_state[ip] = state
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Basic"},
         )
+    with _auth_fail_lock:
+        _auth_fail_state.pop(ip, None)
     return credentials.username
 
 app.mount("/static", StaticFiles(directory="static"), name="static")

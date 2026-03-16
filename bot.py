@@ -4,6 +4,7 @@ import signal
 import time
 import threading
 import copy
+import re
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional, Set, Tuple
@@ -35,6 +36,11 @@ SMART_BUY_REPRICE_STEPS: List[Tuple[int, float]] = [
     (45, 0.008),   # 45초: 현재가 기준 +0.8%
 ]
 SMART_BUY_MONITOR_SEC: int = 300
+SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,14}$")
+
+
+def _is_valid_symbol(symbol: str) -> bool:
+    return bool(SYMBOL_PATTERN.fullmatch(str(symbol or "").strip().upper()))
 
 
 class SlotManager:
@@ -499,6 +505,8 @@ class TradingBot:
     def add_symbol(self, symbol: str, buy_percent: float = 0.0) -> Dict[str, Any]:
         """슬롯에 종목을 추가합니다. buy_percent > 0이면 예수금 대비 해당 비율만큼 매수."""
         symbol = symbol.upper().strip()
+        if not _is_valid_symbol(symbol):
+            return {"success": False, "message": "종목 코드는 영문/숫자/.- 만 허용됩니다. (최대 15자)"}
         now_et: datetime = datetime.now(ZoneInfo("America/New_York"))
         now_kst: datetime = now_et.astimezone(ZoneInfo("Asia/Seoul"))
         is_us_session: bool = self.is_active_trading_time(now_et)
@@ -616,6 +624,8 @@ class TradingBot:
     def remove_symbol(self, symbol: str, sell_all: bool = True) -> Dict[str, Any]:
         """슬롯에서 종목을 제거합니다. sell_all=True이면 전량 매도 후 제거."""
         symbol = symbol.upper().strip()
+        if not _is_valid_symbol(symbol):
+            return {"success": False, "message": "종목 코드 형식이 올바르지 않습니다."}
         if not self.slot_manager.has_symbol(symbol):
             return {"success": False, "message": f"{symbol}은(는) 슬롯에 없습니다."}
 
@@ -683,6 +693,8 @@ class TradingBot:
     def search_ticker(self, symbol: str) -> Dict[str, Any]:
         """티커를 검색하고 종목 정보를 반환합니다."""
         symbol = symbol.upper().strip()
+        if not _is_valid_symbol(symbol):
+            return {"found": False, "message": "종목 코드 형식이 올바르지 않습니다."}
         try:
             ticker = yf.Ticker(symbol)
             info: Dict[str, Any] = ticker.info
