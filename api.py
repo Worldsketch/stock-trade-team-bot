@@ -2,6 +2,7 @@ import os
 import time
 import json
 import threading
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import requests
@@ -26,6 +27,28 @@ def retry_api(max_retries: int = 3, delay_sec: float = 1.0) -> Any:
                         time.sleep(delay_sec)
         return wrapper
     return decorator
+
+
+def _mask_sensitive_text(text: str) -> str:
+    masked: str = str(text)
+    patterns: List[Tuple[str, str]] = [
+        (r"(CANO=)\d+", r"\1***"),
+        (r"(ACNT_PRDT_CD=)\d+", r"\1**"),
+        (r"(PDNO=)\d+", r"\1***"),
+        (r'("CANO"\s*:\s*")\d+(")', r"\1***\2"),
+        (r'("ACNT_PRDT_CD"\s*:\s*")\d+(")', r"\1**\2"),
+        (r'("appkey"\s*:\s*")[^"]+(")', r"\1***\2"),
+        (r'("appsecret"\s*:\s*")[^"]+(")', r"\1***\2"),
+        (r"(appkey=)[^&\s]+", r"\1***"),
+        (r"(appsecret=)[^&\s]+", r"\1***"),
+    ]
+    for pattern, repl in patterns:
+        masked = re.sub(pattern, repl, masked)
+    return masked
+
+
+def _format_safe_error(error: Exception) -> str:
+    return _mask_sensitive_text(f"{type(error).__name__}: {error}")
 
 class KoreaInvestmentAPI:
     def __init__(self, app_key: str, app_secret: str, account_no: str, account_code: str, is_mock: bool = True) -> None:
@@ -245,10 +268,10 @@ class KoreaInvestmentAPI:
                         if exrt > 0 and result.get("exchange_rate", 0.0) <= 0:
                             result["exchange_rate"] = exrt
                     except Exception as sub_e:
-                        print(f"[실전 예수금 조회 에러 ({excg})] {type(sub_e).__name__}: {sub_e}")
+                        print(f"[실전 예수금 조회 에러 ({excg})] {_format_safe_error(sub_e)}")
                         continue
             except Exception as e:
-                print(f"[실전 예수금 조회 에러] {type(e).__name__}: {e}")
+                print(f"[실전 예수금 조회 에러] {_format_safe_error(e)}")
 
             try:
                 krw_url: str = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-psbl-order"
@@ -269,7 +292,7 @@ class KoreaInvestmentAPI:
                     result["krw_balance"] = float(krw_data['output'].get('max_buy_amt', 0.0))
                     result["krw_cash"] = float(krw_data['output'].get('ord_psbl_cash', 0.0))
             except Exception as e:
-                print(f"[실전 원화 예수금 조회 에러] {type(e).__name__}: {e}")
+                print(f"[실전 원화 예수금 조회 에러] {_format_safe_error(e)}")
 
             tot_evlu_pfls_sum: float = 0.0
             tot_pchs_amt_sum: float = 0.0
@@ -319,7 +342,7 @@ class KoreaInvestmentAPI:
                             tot_pchs_amt_sum += float(summary.get('frcr_pchs_amt1', 0))
                             tot_stck_evlu_sum += float(summary.get('ovrs_stck_evlu_amt', 0))
                 except Exception as e:
-                    print(f"[실전 포지션 조회 에러 ({excg})] {type(e).__name__}: {e}")
+                    print(f"[실전 포지션 조회 에러 ({excg})] {_format_safe_error(e)}")
             result["tot_evlu_pfls"] = tot_evlu_pfls_sum
             result["tot_pchs_amt"] = tot_pchs_amt_sum
             result["tot_stck_evlu"] = tot_stck_evlu_sum
@@ -730,7 +753,7 @@ class KoreaInvestmentAPI:
                         "orgn_odno": item.get('orgn_odno', ''),
                     })
             except Exception as e:
-                print(f"[미체결 조회 에러 ({excg})] {type(e).__name__}: {e}")
+                print(f"[미체결 조회 에러 ({excg})] {_format_safe_error(e)}")
         return orders
 
     @retry_api(max_retries=3)

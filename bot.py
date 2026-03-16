@@ -205,9 +205,12 @@ class TradingBot:
         self._last_live_snapshot_ts: float = 0.0
         # 무거운 잔고/포지션 동기화 주기와, 가벼운 스냅샷 발행 주기를 분리
         self._portfolio_sync_interval_sec: float = 5.0
+        self._portfolio_sync_interval_idle_sec: float = 30.0
         self._snapshot_publish_interval_sec: float = 1.0
         self._last_portfolio_sync_ts: float = 0.0
         self._live_snapshot_interval_sec: float = self._snapshot_publish_interval_sec
+        self._empty_positions_streak: int = 0
+        self._empty_positions_confirm_count: int = 3
         
         # 수동 매도 후 매수 차단 (타임스탬프)
         self.manual_sell_block: Dict[str, float] = {}
@@ -221,6 +224,9 @@ class TradingBot:
         # 에러 알림 쓰로틀링 (10분)
         self._error_throttle: Dict[str, float] = {}
         self._error_throttle_seconds: float = 600.0
+        # API 이상 경고 로그 쓰로틀링 (1분)
+        self._api_warn_last_ts: Dict[str, float] = {}
+        self._api_warn_interval_sec: float = 60.0
 
         # 일별 자산 추적
         self.equity_log_file: str = "equity_log.json"
@@ -549,25 +555,24 @@ class TradingBot:
             }
 
         buy_qty: int = 1
+        buy_price: float = round(current_price * (1.0 + SMART_BUY_INITIAL_PREMIUM), 2)
         if buy_percent > 0:
             try:
                 if not bal_data:
                     bal_data = self.api.get_balance_and_positions(symbols=self.symbols + [symbol])
                 available_cash: float = float(bal_data.get("usd_balance", 0.0) or 0.0)
                 buy_amount: float = available_cash * (buy_percent / 100.0)
-                buy_qty = int(buy_amount / current_price)
+                buy_qty = int(buy_amount / buy_price)
                 if buy_qty < 1:
                     return {
                         "success": False,
                         "message": (
                             f"{symbol} 매수 금액(${buy_amount:.0f}, 예수금 ${available_cash:,.2f}의 {buy_percent:.1f}%)이 "
-                            f"1주 가격(${current_price:.2f})보다 적습니다."
+                            f"주문가(${buy_price:.2f})보다 적습니다."
                         ),
                     }
             except Exception as e:
                 return {"success": False, "message": f"매수 수량 계산 실패: {e}"}
-
-        buy_price: float = round(current_price * (1.0 + SMART_BUY_INITIAL_PREMIUM), 2)
         prefer_daytime: bool = is_daytime_session and (not is_us_session)
         success: bool = self.api.place_order(symbol, buy_qty, buy_price, is_buy=True, prefer_daytime=prefer_daytime)
         if not success:
@@ -911,6 +916,14 @@ class TradingBot:
             return
         self._error_throttle[key] = now
         self.send_telegram_message(message)
+
+    def _log_api_warning_throttled(self, key: str, message: str) -> None:
+        now: float = time.time()
+        last_ts: float = self._api_warn_last_ts.get(key, 0.0)
+        if now - last_ts < self._api_warn_interval_sec:
+            return
+        self._api_warn_last_ts[key] = now
+        self.log(message, send_tg=False)
 
     def _send_heartbeat(self) -> None:
         now: float = time.time()
@@ -1298,9 +1311,17 @@ class TradingBot:
         item_cd: str = self.symbols[0] if self.symbols else "AAPL"
         data: Dict[str, Any] = self.api.get_balance_and_positions(item_cd=item_cd, symbols=self.symbols)
         self._last_portfolio_sync_ts = time.time()
+        incoming_positions: List[Dict[str, Any]] = list(data.get("positions", []))
+        had_prev_holdings: bool = (
+            (not self.positions.empty)
+            and float(self.positions["quantity"].sum()) > 0
+        )
         new_usd: float = data["usd_balance"]
         if new_usd <= 0 and self.last_usd_balance > 100:
-            self.log(f"⚠️ [API 이상] USD 예수금 $0 반환 (기존 ${self.last_usd_balance:,.2f} 유지)", send_tg=False)
+            self._log_api_warning_throttled(
+                "usd_zero_balance",
+                f"⚠️ [API 이상] USD 예수금 $0 반환 (기존 ${self.last_usd_balance:,.2f} 유지)",
+            )
         else:
             self.last_usd_balance = new_usd
 
@@ -1323,11 +1344,35 @@ class TradingBot:
         new_pchs_amt: float = data.get("tot_pchs_amt", 0.0)
         new_stck_evlu: float = data.get("tot_stck_evlu", 0.0)
         if new_stck_evlu <= 0 and self.tot_stck_evlu > 100 and len(self.symbols) > 0:
-            self.log(f"⚠️ [API 이상] 주식 평가액 $0 반환 (기존 ${self.tot_stck_evlu:,.2f} 유지)", send_tg=False)
+            self._log_api_warning_throttled(
+                "stock_eval_zero",
+                f"⚠️ [API 이상] 주식 평가액 $0 반환 (기존 ${self.tot_stck_evlu:,.2f} 유지)",
+            )
         else:
             self.tot_evlu_pfls = new_evlu_pfls
             self.tot_pchs_amt = new_pchs_amt
             self.tot_stck_evlu = new_stck_evlu
+
+        # API 순간 이상으로 빈 포지션이 내려오는 경우(실보유 있음)에는 몇 회 확인 전까지 기존 상태를 유지
+        suspicious_empty_positions: bool = (
+            had_prev_holdings
+            and len(incoming_positions) == 0
+            and self.tot_stck_evlu > 100
+        )
+        if suspicious_empty_positions:
+            self._empty_positions_streak += 1
+            if self._empty_positions_streak < self._empty_positions_confirm_count:
+                self._log_api_warning_throttled(
+                    "positions_empty_transient",
+                    (
+                        "⚠️ [API 이상] 포지션 빈 응답 감지 "
+                        f"(보유값 유지, {self._empty_positions_streak}/{self._empty_positions_confirm_count})"
+                    ),
+                )
+                self._publish_live_snapshot()
+                return
+        else:
+            self._empty_positions_streak = 0
 
         current_symbols: List[str] = self.symbols
         if self.positions.empty or set(self.positions['symbol'].tolist()) != set(current_symbols):
@@ -1338,7 +1383,7 @@ class TradingBot:
             self.positions['avg_price'] = 0.0
             self.positions['current_price'] = 0.0
 
-        for pos in data["positions"]:
+        for pos in incoming_positions:
             symbol: str = pos["symbol"]
             if symbol in current_symbols and not self.positions.empty:
                 idx: pd.Series = self.positions['symbol'] == symbol
@@ -1870,7 +1915,11 @@ class TradingBot:
                         break
                     time.sleep(1)
                     now_ts: float = time.time()
-                    if (now_ts - self._last_portfolio_sync_ts) >= self._portfolio_sync_interval_sec:
+                    sync_interval_sec: float = self._portfolio_sync_interval_sec
+                    now_loop_et: datetime = self.get_eastern_time()
+                    if not (self.is_active_trading_time(now_loop_et) or self.is_daytime_market_open()):
+                        sync_interval_sec = self._portfolio_sync_interval_idle_sec
+                    if (now_ts - self._last_portfolio_sync_ts) >= sync_interval_sec:
                         try:
                             self.sync_positions()
                             self._publish_live_snapshot()

@@ -90,33 +90,6 @@ async def read_index() -> str:
     with open("static/index.html", "r", encoding="utf-8") as f:
         return f.read()
 
-def _monitor_sell_fill(symbol: str, qty: int, price: float, label: str) -> None:
-    for i in range(60):
-        time.sleep(5)
-        if not bot_instance:
-            return
-        try:
-            orders = _live_data_cache.get_pending(ttl_sec=2.0)
-            if orders is None:
-                orders = bot_instance.api.get_pending_orders(symbols=bot_instance.symbols)
-                _live_data_cache.set_pending(orders)
-            still_pending: bool = any(
-                o.get("symbol") == symbol and int(o.get("remaining_qty", 0)) > 0
-                for o in orders
-            )
-            if not still_pending:
-                filled_amount: float = qty * price
-                krw_filled: float = filled_amount * bot_instance.exchange_rate
-                msg: str = f"✅ [수동 매도 체결 완료]\n종목: {symbol}\n수량: {qty}주 ({label})\n체결가: ${price:.2f}\n체결 금액: ${filled_amount:,.2f} (약 {krw_filled:,.0f}원)"
-                bot_instance.send_telegram_message(msg)
-                bot_instance.log(f"✅ [수동매도 체결] {symbol} {qty}주 @ ${price:.2f} ({label})")
-                return
-        except Exception:
-            continue
-    msg = f"⏰ [수동 매도 미체결]\n종목: {symbol}\n수량: {qty}주 ({label})\n지정가: ${price:.2f}\n5분간 체결되지 않았습니다. 미체결 주문을 확인하세요."
-    bot_instance.send_telegram_message(msg)
-    bot_instance.log(f"⏰ [수동매도 미체결] {symbol} {qty}주 @ ${price:.2f} ({label})")
-
 def _get_bot_instance() -> Optional[TradingBot]:
     return bot_instance
 
@@ -139,7 +112,6 @@ app.include_router(
         auth_dependency=get_current_username,
         get_bot=_get_bot_instance,
         invalidate_status_cache=_invalidate_status_cache,
-        monitor_sell_fill=_monitor_sell_fill,
         live_data_cache=_live_data_cache,
     )
 )

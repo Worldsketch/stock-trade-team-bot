@@ -21,7 +21,6 @@ def create_trading_router(
     auth_dependency: Callable[..., str],
     get_bot: Callable[[], Optional[TradingBot]],
     invalidate_status_cache: Callable[[], None],
-    monitor_sell_fill: Callable[[str, int, float, str], None],
     live_data_cache: Optional[LiveDataCache] = None,
 ) -> APIRouter:
     router = APIRouter()
