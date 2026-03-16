@@ -3,6 +3,7 @@ import json
 import time
 import secrets
 import threading
+import shutil
 from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, List
@@ -36,6 +37,7 @@ _realized_pnl: RealizedPnlCalculator = RealizedPnlCalculator(cache_ttl_seconds=1
 _live_data_cache: LiveDataCache = LiveDataCache()
 BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
 RUNTIME_DIR: str = os.path.join(BASE_DIR, "runtime_data")
+LEGACY_AI_REPORT_FILE: str = os.path.join(BASE_DIR, "ai_report.json")
 
 
 def _get_ai_report_file_path() -> str:
@@ -47,11 +49,24 @@ def _get_ai_report_file_path() -> str:
 
 AI_REPORT_FILE: str = _get_ai_report_file_path()
 
+
+def _ensure_ai_report_storage() -> None:
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    if AI_REPORT_FILE == LEGACY_AI_REPORT_FILE:
+        return
+    if os.path.exists(AI_REPORT_FILE):
+        return
+    if os.path.exists(LEGACY_AI_REPORT_FILE):
+        target_dir: str = os.path.dirname(AI_REPORT_FILE)
+        if target_dir:
+            os.makedirs(target_dir, exist_ok=True)
+        shutil.copy2(LEGACY_AI_REPORT_FILE, AI_REPORT_FILE)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bot_instance, bot_thread
     load_dotenv()
-    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    _ensure_ai_report_storage()
     
     app_key: str = os.getenv("KIS_APP_KEY", "")
     app_secret: str = os.getenv("KIS_APP_SECRET", "")
