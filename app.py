@@ -34,11 +34,24 @@ _status_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
 _strategy_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
 _realized_pnl: RealizedPnlCalculator = RealizedPnlCalculator(cache_ttl_seconds=180.0, trade_file="trade_log.json")
 _live_data_cache: LiveDataCache = LiveDataCache()
+BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
+RUNTIME_DIR: str = os.path.join(BASE_DIR, "runtime_data")
+
+
+def _get_ai_report_file_path() -> str:
+    configured: str = os.getenv("AI_REPORT_FILE", "").strip()
+    if configured:
+        return configured
+    return os.path.join(RUNTIME_DIR, "ai_report.json")
+
+
+AI_REPORT_FILE: str = _get_ai_report_file_path()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bot_instance, bot_thread
     load_dotenv()
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
     
     app_key: str = os.getenv("KIS_APP_KEY", "")
     app_secret: str = os.getenv("KIS_APP_SECRET", "")
@@ -181,7 +194,7 @@ app.include_router(
     create_ai_router(
         auth_dependency=get_current_username,
         generate_ai_report=lambda: _generate_ai_report(),
-        ai_report_file="ai_report.json",
+        ai_report_file=AI_REPORT_FILE,
     )
 )
 
@@ -281,7 +294,6 @@ async def get_strategy_params(
     }
 
 
-AI_REPORT_FILE: str = "ai_report.json"
 _ai_report_lock = threading.Lock()
 
 
@@ -503,6 +515,9 @@ def _generate_ai_report() -> Dict[str, Any]:
             "model": "gemini-3.1-pro-preview"
         }
         with _ai_report_lock:
+            report_dir: str = os.path.dirname(AI_REPORT_FILE)
+            if report_dir:
+                os.makedirs(report_dir, exist_ok=True)
             with open(AI_REPORT_FILE, 'w', encoding='utf-8') as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
 
@@ -519,38 +534,30 @@ def _generate_ai_report() -> Dict[str, Any]:
         return {"error": "Gemini API 호출 실패 (관리자 로그 확인 필요)"}
 
 
-def _is_us_dst() -> bool:
-    """미국 동부시간 썸머타임 여부 (ET offset이 -4이면 DST)"""
-    now_et = datetime.now(ZoneInfo("America/New_York"))
-    return now_et.utcoffset().total_seconds() == -4 * 3600
-
-
 def _auto_generate_report() -> None:
-    """하루 2회 자동 리포트 (KST 10:00, 본장 시작 시점 - 썸머타임 자동 반영)"""
+    """하루 2회 자동 리포트 (ET 프리장 04:00, 본장 09:30 기준)"""
     import time as _time
     reported_sessions: set = set()
     while True:
         try:
             now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
-            today_str: str = now_kst.strftime("%Y-%m-%d")
-            hour: int = now_kst.hour
-            minute: int = now_kst.minute
+            now_et = now_kst.astimezone(ZoneInfo("America/New_York"))
+            et_date: str = now_et.strftime("%Y-%m-%d")
+            hour: int = now_et.hour
+            minute: int = now_et.minute
 
-            morning_key: str = f"{today_str}-morning"
-            market_key: str = f"{today_str}-market"
+            premarket_key: str = f"{et_date}-premarket-open"
+            regular_key: str = f"{et_date}-regular-open"
 
-            market_hour: int = 22 if _is_us_dst() else 23
-            market_min: int = 0
-
-            if now_kst.weekday() < 5:
-                if hour == 10 and minute < 15 and morning_key not in reported_sessions:
+            if now_et.weekday() < 5:
+                if hour == 4 and minute < 15 and premarket_key not in reported_sessions:
                     _generate_ai_report()
-                    reported_sessions.add(morning_key)
-                elif hour == market_hour and market_min <= minute < market_min + 15 and market_key not in reported_sessions:
+                    reported_sessions.add(premarket_key)
+                elif hour == 9 and 30 <= minute < 45 and regular_key not in reported_sessions:
                     _generate_ai_report()
-                    reported_sessions.add(market_key)
+                    reported_sessions.add(regular_key)
 
-            old_keys = [k for k in reported_sessions if not k.startswith(today_str)]
+            old_keys = [k for k in reported_sessions if not k.startswith(et_date)]
             for k in old_keys:
                 reported_sessions.discard(k)
         except Exception:

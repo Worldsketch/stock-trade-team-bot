@@ -54,7 +54,7 @@
 ## AI 시장 분석
 
 - **Gemini 3.1 Pro** 기반 기술적 분석 리포트
-- 하루 2회 자동 생성 (KST 10:00 / 본장 시작 시점)
+- 하루 2회 자동 생성 (ET 프리장 시작 04:00 / 본장 시작 09:30)
 - 보유 레버리지 ETF의 기초자산만 분석 (NVDL→NVDA, TSLL→TSLA 등)
 - 수동 재발행 API 지원 (`POST /api/ai-report/refresh`)
 - 분석 항목: 추세 판단, 모멘텀, 핵심 가격대, 월가 컨센서스, 종목별 전략 제안
@@ -111,7 +111,8 @@
 ├── strategy_mode.json    # 전략 모드 저장 (auto/aggressive/defensive)
 ├── trade_log.json        # 매매 내역 기록
 ├── equity_log.json       # 일별 자산 스냅샷
-├── ai_report.json        # AI 분석 리포트 캐시
+├── runtime_data/
+│   └── ai_report.json    # AI 분석 리포트 캐시(서버 저장, 브라우저와 무관하게 유지)
 ├── us_symbol_master.json # KIS 해외 종목마스터 캐시 (자동 생성)
 ├── requirements.txt
 ├── .env.example
