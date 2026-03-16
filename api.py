@@ -50,6 +50,19 @@ def _mask_sensitive_text(text: str) -> str:
 def _format_safe_error(error: Exception) -> str:
     return _mask_sensitive_text(f"{type(error).__name__}: {error}")
 
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        text = str(value).strip().replace(",", "")
+        if text == "":
+            return default
+        return float(text)
+    except Exception:
+        return default
+
+
 class KoreaInvestmentAPI:
     def __init__(self, app_key: str, app_secret: str, account_no: str, account_code: str, is_mock: bool = True) -> None:
         self.app_key: str = app_key
@@ -70,10 +83,24 @@ class KoreaInvestmentAPI:
         self._exchange_cache: Dict[str, str] = {}
         self._quote_cache: Dict[str, Dict[str, float]] = {}
         self._EXCHANGE_MAP: Dict[str, str] = {"NAS": "NASD", "NYS": "NYSE", "AMS": "AMEX"}
+        self._LONG_TO_SHORT_MAP: Dict[str, str] = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
         self._DAYTIME_EXCD_MAP: Dict[str, str] = {"NAS": "BAQ", "NYS": "BAY", "AMS": "BAA"}
         self._quote_cache_ttl_sec: float = 2.0
         daytime_flag: str = os.getenv("KIS_ENABLE_DAYTIME_TRADING", "true").strip().lower()
         self.enable_daytime_trading: bool = daytime_flag not in ("0", "false", "off", "no")
+        self._api_fail_window_stats: Dict[str, int] = {}
+        self._api_fail_total_stats: Dict[str, int] = {}
+        self._api_fail_recent: List[Dict[str, str]] = []
+        self._api_fail_recent_limit: int = 500
+        self._api_fail_stats_lock = threading.Lock()
+        self._api_fail_last_flush_ts: float = time.time()
+        self._api_fail_flush_interval_sec: float = 300.0
+        self._api_fail_log_file: str = "api_fail_stats.json"
+        self._api_fail_last_persist_ts: float = 0.0
+        self._api_fail_persist_interval_sec: float = 10.0
+        self._foreign_margin_cache: Dict[str, float] = {"usd": 0.0, "exchange_rate": 0.0, "ts": 0.0}
+        self._foreign_margin_cache_ttl_sec: float = 2.0
+        self._foreign_margin_lock = threading.Lock()
 
     def _get_exchange_code(self, symbol: str, style: str = "short") -> str:
         if symbol in self._exchange_cache:
@@ -186,6 +213,315 @@ class KoreaInvestmentAPI:
             return ["NASD"]
         return list(excg_set)
 
+    def _normalize_us_exchanges_for_inquiry(self, exchanges: List[str]) -> List[str]:
+        """
+        실전 조회 API는 NASD로 미국 전체 조회가 가능해(NYSE/AMEX 포함)
+        조회 계열 호출에서 미국 거래소 코드를 NASD로 정규화해 호출량과 중복을 줄입니다.
+        """
+        if self.is_mock:
+            # 모의는 거래소별 동작 차이가 있어 기존 유지
+            return list(dict.fromkeys(exchanges))
+
+        us_exchanges: set = {"NASD", "NYSE", "AMEX", "NAS"}
+        uniq: List[str] = list(dict.fromkeys(exchanges))
+        has_us: bool = any(ex in us_exchanges for ex in uniq)
+        normalized: List[str] = [ex for ex in uniq if ex not in us_exchanges]
+        if has_us:
+            normalized.insert(0, "NASD")
+        return normalized if normalized else ["NASD"]
+
+    def _default_item_for_exchange(self, excg: str, fallback: str = "AAPL") -> str:
+        defaults: Dict[str, str] = {
+            "NASD": "AAPL",
+            "NAS": "AAPL",
+            "NYSE": "BA",
+            "AMEX": "SPY",
+        }
+        base: str = str(fallback or "").strip().upper()
+        return defaults.get(excg, base if base else "AAPL")
+
+    def _get_psamount_reference_price(self, symbol: str, excg: str) -> float:
+        """
+        TTTS3007R 입력용 주문단가를 실시간가 기반으로 보정합니다.
+        조회 실패 시 1.0으로 안전 폴백합니다.
+        """
+        sym: str = str(symbol or "").strip().upper()
+        if not sym:
+            return 1.0
+        try:
+            price = float(self.get_current_price(sym, prefer_daytime=self._is_daytime_window_open()) or 0.0)
+            if price > 0:
+                return price
+        except Exception:
+            pass
+        try:
+            short_excd: str = self._LONG_TO_SHORT_MAP.get(excg, "NAS")
+            url: str = f"{self.base_url}/uapi/overseas-price/v1/quotations/price"
+            headers: Dict[str, str] = self.get_headers("HHDFS00000300")
+            params: Dict[str, str] = {"AUTH": "", "EXCD": short_excd, "SYMB": sym}
+            res = requests.get(url, headers=headers, params=params, timeout=(1.0, 2.0))
+            res.raise_for_status()
+            data = res.json()
+            price2 = _safe_float(data.get("output", {}).get("last", 0.0))
+            if price2 > 0:
+                return price2
+        except Exception:
+            pass
+        return 1.0
+
+    def _record_api_failure(self, api_name: str, rt_cd: Any, msg_cd: Any, msg1: Any = "") -> None:
+        """
+        API 실패 코드 집계:
+        - 5분 단위 콘솔 요약
+        - JSON 파일(api_fail_stats.json) 주기 저장
+        """
+        key: str = f"{api_name}|rt={str(rt_cd)}|msg={str(msg_cd)}"
+        now_ts: float = time.time()
+        top_items: List[Tuple[str, int]] = []
+        persist_payload: Optional[Dict[str, Any]] = None
+        masked_msg1: str = _mask_sensitive_text(str(msg1))
+
+        with self._api_fail_stats_lock:
+            self._api_fail_window_stats[key] = self._api_fail_window_stats.get(key, 0) + 1
+            self._api_fail_total_stats[key] = self._api_fail_total_stats.get(key, 0) + 1
+            self._api_fail_recent.append(
+                {
+                    "ts": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S"),
+                    "api": str(api_name),
+                    "rt_cd": str(rt_cd),
+                    "msg_cd": str(msg_cd),
+                    "msg1": masked_msg1[:200],
+                }
+            )
+            if len(self._api_fail_recent) > self._api_fail_recent_limit:
+                self._api_fail_recent = self._api_fail_recent[-self._api_fail_recent_limit :]
+
+            if (now_ts - self._api_fail_last_flush_ts) >= self._api_fail_flush_interval_sec:
+                top_items = sorted(self._api_fail_window_stats.items(), key=lambda kv: kv[1], reverse=True)[:8]
+                self._api_fail_window_stats = {}
+                self._api_fail_last_flush_ts = now_ts
+
+            if (now_ts - self._api_fail_last_persist_ts) >= self._api_fail_persist_interval_sec:
+                persist_payload = {
+                    "updated_at": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S"),
+                    "totals": dict(self._api_fail_total_stats),
+                    "recent": list(self._api_fail_recent),
+                }
+                self._api_fail_last_persist_ts = now_ts
+
+        if top_items:
+            joined: str = ", ".join(f"{k} x{v}" for k, v in top_items)
+            print(f"[API 실패코드 집계(최근 5분)] {joined}")
+        if persist_payload is not None:
+            try:
+                tmp_path: str = f"{self._api_fail_log_file}.tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(persist_payload, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, self._api_fail_log_file)
+            except Exception as e:
+                print(f"[API 실패코드 파일 저장 오류] {_format_safe_error(e)}")
+
+    def _fetch_overseas_balance_pages(self, excg: str, tr_crcy_cd: str = "USD", max_pages: int = 20) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        해외주식 잔고(TTTS3012R) 연속조회 페이지를 모두 가져옵니다.
+        """
+        url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
+        items: List[Dict[str, Any]] = []
+        summaries: List[Dict[str, Any]] = []
+        ctx_fk200: str = ""
+        ctx_nk200: str = ""
+        tr_cont_req: str = ""
+        prev_ctx: Tuple[str, str] = ("", "")
+
+        for _ in range(max_pages):
+            headers: Dict[str, str] = self.get_headers("TTTS3012R")
+            if tr_cont_req:
+                headers["tr_cont"] = tr_cont_req
+            params: Dict[str, str] = {
+                "CANO": self.account_no,
+                "ACNT_PRDT_CD": self.account_code,
+                "OVRS_EXCG_CD": excg,
+                "TR_CRCY_CD": tr_crcy_cd,
+                "CTX_AREA_FK200": ctx_fk200,
+                "CTX_AREA_NK200": ctx_nk200,
+            }
+            res = requests.get(url, headers=headers, params=params, timeout=(2.0, 4.0))
+            res.raise_for_status()
+            data = res.json()
+            if data.get("rt_cd") != "0":
+                msg_cd: str = str(data.get("msg_cd", "")).strip()
+                msg1: str = str(data.get("msg1", "")).strip()
+                self._record_api_failure("TTTS3012R", data.get("rt_cd"), msg_cd, msg1)
+                print(
+                    f"[실전 포지션 비정상 ({excg})] "
+                    f"rt_cd={data.get('rt_cd')} msg_cd={msg_cd} msg1={_mask_sensitive_text(msg1)}"
+                )
+                break
+
+            output1 = data.get("output1", [])
+            if isinstance(output1, list):
+                items.extend([x for x in output1 if isinstance(x, dict)])
+
+            o2 = data.get("output2")
+            if isinstance(o2, dict):
+                summaries.append(o2)
+            elif isinstance(o2, list) and o2 and isinstance(o2[0], dict):
+                summaries.append(o2[0])
+
+            tr_cont_res: str = str(res.headers.get("tr_cont", "")).strip().upper()
+            next_fk200: str = str(data.get("ctx_area_fk200", "")).strip()
+            next_nk200: str = str(data.get("ctx_area_nk200", "")).strip()
+            if tr_cont_res not in ("F", "M") or not next_fk200 or not next_nk200:
+                break
+            if (next_fk200, next_nk200) == prev_ctx:
+                break
+            prev_ctx = (next_fk200, next_nk200)
+            ctx_fk200, ctx_nk200 = next_fk200, next_nk200
+            tr_cont_req = "N"
+
+        return items, summaries
+
+    def _fetch_pending_pages(self, excg: str, tr_id: str, max_pages: int = 20) -> List[Dict[str, Any]]:
+        """
+        해외주식 미체결(TTTS3018R/VTTS3018R) 연속조회 페이지를 모두 가져옵니다.
+        """
+        url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-nccs"
+        items: List[Dict[str, Any]] = []
+        ctx_fk200: str = ""
+        ctx_nk200: str = ""
+        tr_cont_req: str = ""
+        prev_ctx: Tuple[str, str] = ("", "")
+
+        for _ in range(max_pages):
+            headers: Dict[str, str] = self.get_headers(tr_id)
+            if tr_cont_req:
+                headers["tr_cont"] = tr_cont_req
+            params: Dict[str, str] = {
+                "CANO": self.account_no,
+                "ACNT_PRDT_CD": self.account_code,
+                "OVRS_EXCG_CD": excg,
+                "SORT_SQN": "DS",
+                "CTX_AREA_FK200": ctx_fk200,
+                "CTX_AREA_NK200": ctx_nk200,
+            }
+            res = requests.get(url, headers=headers, params=params, timeout=(1.5, 3.0))
+            try:
+                data: Dict[str, Any] = res.json()
+            except Exception:
+                print(f"[미체결 조회 실패 ({excg})] HTTP {res.status_code}")
+                break
+
+            if data.get("rt_cd") != "0":
+                msg_cd: str = str(data.get("msg_cd", "")).strip()
+                msg1: str = str(data.get("msg1", "")).strip()
+                self._record_api_failure(tr_id, data.get("rt_cd"), msg_cd, msg1)
+                print(
+                    f"[미체결 조회 비정상 ({excg})] "
+                    f"rt_cd={data.get('rt_cd')} msg_cd={msg_cd} msg1={_mask_sensitive_text(msg1)}"
+                )
+                break
+
+            output = data.get("output", [])
+            if isinstance(output, list):
+                items.extend([x for x in output if isinstance(x, dict)])
+
+            tr_cont_res: str = str(res.headers.get("tr_cont", "")).strip().upper()
+            next_fk200: str = str(data.get("ctx_area_fk200", "")).strip()
+            next_nk200: str = str(data.get("ctx_area_nk200", "")).strip()
+            if tr_cont_res not in ("F", "M") or not next_fk200 or not next_nk200:
+                break
+            if (next_fk200, next_nk200) == prev_ctx:
+                break
+            prev_ctx = (next_fk200, next_nk200)
+            ctx_fk200, ctx_nk200 = next_fk200, next_nk200
+            tr_cont_req = "N"
+
+        return items
+
+    def _extract_psamount_usd(self, output: Dict[str, Any]) -> float:
+        """
+        TTTS3007R 응답에서 주문가능 외화 금액을 최대치 기준으로 추출합니다.
+        문서상 ovrs_ord_psbl_amt가 비어/0일 수 있어 다중 필드 fallback을 사용합니다.
+        """
+        candidates: List[float] = [
+            _safe_float(output.get("ovrs_ord_psbl_amt", 0.0)),
+            _safe_float(output.get("ord_psbl_frcr_amt", 0.0)),
+            _safe_float(output.get("frcr_ord_psbl_amt1", 0.0)),
+        ]
+        return max(candidates) if candidates else 0.0
+
+    def _get_usd_from_foreign_margin(self, result: Dict[str, Any]) -> float:
+        """
+        해외증거금 통화별조회(TTTC2101R)에서 USD 통화 기준 예수금을 fallback 조회합니다.
+        """
+        if self.is_mock:
+            return 0.0
+
+        now_ts: float = time.time()
+        with self._foreign_margin_lock:
+            cached_age: float = now_ts - float(self._foreign_margin_cache.get("ts", 0.0))
+            if cached_age < self._foreign_margin_cache_ttl_sec:
+                cached_usd: float = float(self._foreign_margin_cache.get("usd", 0.0))
+                cached_exrt: float = float(self._foreign_margin_cache.get("exchange_rate", 0.0))
+                if cached_exrt > 0 and result.get("exchange_rate", 0.0) <= 0:
+                    result["exchange_rate"] = cached_exrt
+                return cached_usd
+
+        url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/foreign-margin"
+        headers: Dict[str, str] = self.get_headers("TTTC2101R")
+        params: Dict[str, str] = {
+            "CANO": self.account_no,
+            "ACNT_PRDT_CD": self.account_code,
+        }
+        try:
+            res = requests.get(url, headers=headers, params=params, timeout=(2.0, 4.0))
+            res.raise_for_status()
+            data = res.json()
+            if data.get("rt_cd") != "0":
+                msg_cd: str = str(data.get("msg_cd", "")).strip()
+                msg1: str = str(data.get("msg1", "")).strip()
+                self._record_api_failure("TTTC2101R", data.get("rt_cd"), msg_cd, msg1)
+                print(f"[해외증거금 조회 비정상] rt_cd={data.get('rt_cd')} msg_cd={msg_cd} msg1={_mask_sensitive_text(msg1)}")
+                return 0.0
+
+            output = data.get("output", [])
+            if not isinstance(output, list):
+                return 0.0
+
+            usd_candidates: List[float] = []
+            for row in output:
+                if not isinstance(row, dict):
+                    continue
+                crcy_cd: str = str(row.get("crcy_cd", "")).strip().upper()
+                if crcy_cd != "USD":
+                    continue
+                usd_candidates.append(_safe_float(row.get("frcr_gnrl_ord_psbl_amt", 0.0)))
+                usd_candidates.append(_safe_float(row.get("frcr_dncl_amt1", 0.0)))
+                usd_candidates.append(_safe_float(row.get("frcr_ord_psbl_amt1", 0.0)))
+
+                bass_exrt: float = _safe_float(row.get("bass_exrt", 0.0))
+                if bass_exrt > 0 and result.get("exchange_rate", 0.0) <= 0:
+                    result["exchange_rate"] = bass_exrt
+
+            usd_value: float = max(usd_candidates) if usd_candidates else 0.0
+            with self._foreign_margin_lock:
+                self._foreign_margin_cache = {
+                    "usd": usd_value,
+                    "exchange_rate": float(result.get("exchange_rate", 0.0) or 0.0),
+                    "ts": time.time(),
+                }
+            return usd_value
+        except Exception as e:
+            print(f"[해외증거금 조회 에러] {_format_safe_error(e)}")
+            with self._foreign_margin_lock:
+                cached_usd_fallback: float = float(self._foreign_margin_cache.get("usd", 0.0))
+                cached_exrt_fallback: float = float(self._foreign_margin_cache.get("exchange_rate", 0.0))
+                if cached_exrt_fallback > 0 and result.get("exchange_rate", 0.0) <= 0:
+                    result["exchange_rate"] = cached_exrt_fallback
+                if cached_usd_fallback > 0:
+                    return cached_usd_fallback
+            return 0.0
+
     @retry_api(max_retries=2, delay_sec=0.2)
     def get_balance_and_positions(self, item_cd: str = "AAPL", symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         if self.is_mock:
@@ -246,30 +582,59 @@ class KoreaInvestmentAPI:
                 bal_url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
                 bal_headers: Dict[str, str] = self.get_headers("TTTS3007R")
                 balance_excgs: List[str] = self._get_required_exchanges(symbols if symbols else [item_cd])
+                balance_excgs = self._normalize_us_exchanges_for_inquiry(balance_excgs)
+                representative_item_by_excg: Dict[str, str] = {}
+                for sym in symbols or []:
+                    sym_norm: str = str(sym).strip().upper()
+                    if not sym_norm or sym_norm == "__ALL__":
+                        continue
+                    try:
+                        representative_item_by_excg.setdefault(self._get_exchange_code(sym_norm, "long"), sym_norm)
+                    except Exception:
+                        continue
+                ref_price_cache: Dict[str, float] = {}
                 # 거래소 코드가 종목과 불일치하면 예수금이 0으로 떨어질 수 있어 다중 거래소 재시도
                 for excg in balance_excgs:
                     try:
+                        ref_item: str = representative_item_by_excg.get(excg, self._default_item_for_exchange(excg, fallback=item_cd))
+                        if ref_item not in ref_price_cache:
+                            ref_price_cache[ref_item] = self._get_psamount_reference_price(ref_item, excg)
+                        ref_price: float = max(ref_price_cache.get(ref_item, 1.0), 1.0)
                         bal_params: Dict[str, str] = {
                             "CANO": self.account_no,
                             "ACNT_PRDT_CD": self.account_code,
                             "OVRS_EXCG_CD": excg,
-                            "OVRS_ORD_UNPR": "1",
-                            "ITEM_CD": item_cd
+                            "OVRS_ORD_UNPR": f"{ref_price:.2f}",
+                            "ITEM_CD": ref_item
                         }
                         bal_res = requests.get(bal_url, headers=bal_headers, params=bal_params, timeout=(2.0, 4.0))
                         bal_res.raise_for_status()
                         bal_data = bal_res.json()
-                        if bal_data.get('rt_cd') != '0' or not isinstance(bal_data.get('output'), dict):
+                        if bal_data.get('rt_cd') != '0':
+                            msg_cd: str = str(bal_data.get("msg_cd", "")).strip()
+                            msg1: str = str(bal_data.get("msg1", "")).strip()
+                            self._record_api_failure("TTTS3007R", bal_data.get("rt_cd"), msg_cd, msg1)
+                            print(
+                                f"[실전 예수금 비정상 ({excg}/{ref_item})] "
+                                f"rt_cd={bal_data.get('rt_cd')} msg_cd={msg_cd} msg1={_mask_sensitive_text(msg1)}"
+                            )
                             continue
-                        cand_balance = float(bal_data['output'].get('ovrs_ord_psbl_amt', 0.0))
+                        if not isinstance(bal_data.get('output'), dict):
+                            print(f"[실전 예수금 비정상 ({excg}/{ref_item})] output 누락")
+                            continue
+                        cand_balance = self._extract_psamount_usd(bal_data["output"])
                         if cand_balance > usd_balance:
                             usd_balance = cand_balance
-                        exrt: float = float(bal_data['output'].get('exrt', 0.0))
+                        exrt: float = _safe_float(bal_data['output'].get('exrt', 0.0))
                         if exrt > 0 and result.get("exchange_rate", 0.0) <= 0:
                             result["exchange_rate"] = exrt
                     except Exception as sub_e:
                         print(f"[실전 예수금 조회 에러 ({excg})] {_format_safe_error(sub_e)}")
                         continue
+                if usd_balance <= 0:
+                    margin_usd: float = self._get_usd_from_foreign_margin(result)
+                    if margin_usd > usd_balance:
+                        usd_balance = margin_usd
             except Exception as e:
                 print(f"[실전 예수금 조회 에러] {_format_safe_error(e)}")
 
@@ -297,50 +662,30 @@ class KoreaInvestmentAPI:
             tot_evlu_pfls_sum: float = 0.0
             tot_pchs_amt_sum: float = 0.0
             tot_stck_evlu_sum: float = 0.0
-            required_excgs: List[str] = self._get_required_exchanges(symbols)
+            required_excgs: List[str] = self._normalize_us_exchanges_for_inquiry(self._get_required_exchanges(symbols))
             for excg in required_excgs:
                 try:
-                    pos_url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
-                    pos_headers: Dict[str, str] = self.get_headers("TTTS3012R")
-                    pos_params: Dict[str, str] = {
-                        "CANO": self.account_no,
-                        "ACNT_PRDT_CD": self.account_code,
-                        "OVRS_EXCG_CD": excg,
-                        "TR_CRCY_CD": "USD",
-                        "CTX_AREA_FK200": "",
-                        "CTX_AREA_NK200": ""
-                    }
-                    pos_res = requests.get(pos_url, headers=pos_headers, params=pos_params, timeout=(2.0, 4.0))
-                    pos_res.raise_for_status()
-                    pos_data = pos_res.json()
-                    if pos_data.get('rt_cd') == '0' and isinstance(pos_data.get('output1'), list):
-                        for item in pos_data['output1']:
-                            symbol: Optional[str] = item.get('ovrs_pdno')
-                            qty: float = float(item.get('ovrs_cblc_qty', 0))
-                            avg_price: float = float(item.get('pchs_avg_pric', 0))
-                            current_price: float = float(item.get('now_pric2', 0))
-                            evlu_amt: float = float(item.get('ovrs_stck_evlu_amt', 0))
-                            evlu_pfls: float = float(item.get('frcr_evlu_pfls_amt', 0))
-                            evlu_pfls_rt: float = float(item.get('evlu_pfls_rt', 0))
-                            pchs_amt: float = float(item.get('frcr_pchs_amt1', 0))
-                            if qty > 0:
-                                positions.append({
-                                    "symbol": symbol, "quantity": qty, "avg_price": avg_price,
-                                    "current_price": current_price, "evlu_amt": evlu_amt,
-                                    "evlu_pfls": evlu_pfls, "return_rate": evlu_pfls_rt,
-                                    "pchs_amt": pchs_amt
-                                })
-                        o2 = pos_data.get('output2')
-                        if isinstance(o2, dict):
-                            summary = o2
-                        elif isinstance(o2, list) and len(o2) > 0:
-                            summary = o2[0]
-                        else:
-                            summary = None
-                        if summary:
-                            tot_evlu_pfls_sum += float(summary.get('ovrs_tot_pfls', 0))
-                            tot_pchs_amt_sum += float(summary.get('frcr_pchs_amt1', 0))
-                            tot_stck_evlu_sum += float(summary.get('ovrs_stck_evlu_amt', 0))
+                    pos_items, pos_summaries = self._fetch_overseas_balance_pages(excg=excg, tr_crcy_cd="USD")
+                    for item in pos_items:
+                        symbol: Optional[str] = item.get('ovrs_pdno')
+                        qty: float = float(item.get('ovrs_cblc_qty', 0))
+                        avg_price: float = float(item.get('pchs_avg_pric', 0))
+                        current_price: float = float(item.get('now_pric2', 0))
+                        evlu_amt: float = float(item.get('ovrs_stck_evlu_amt', 0))
+                        evlu_pfls: float = float(item.get('frcr_evlu_pfls_amt', 0))
+                        evlu_pfls_rt: float = float(item.get('evlu_pfls_rt', 0))
+                        pchs_amt: float = float(item.get('frcr_pchs_amt1', 0))
+                        if qty > 0:
+                            positions.append({
+                                "symbol": symbol, "quantity": qty, "avg_price": avg_price,
+                                "current_price": current_price, "evlu_amt": evlu_amt,
+                                "evlu_pfls": evlu_pfls, "return_rate": evlu_pfls_rt,
+                                "pchs_amt": pchs_amt
+                            })
+                    for summary in pos_summaries:
+                        tot_evlu_pfls_sum += float(summary.get('ovrs_tot_pfls', 0))
+                        tot_pchs_amt_sum += float(summary.get('frcr_pchs_amt1', 0))
+                        tot_stck_evlu_sum += float(summary.get('ovrs_stck_evlu_amt', 0))
                 except Exception as e:
                     print(f"[실전 포지션 조회 에러 ({excg})] {_format_safe_error(e)}")
             result["tot_evlu_pfls"] = tot_evlu_pfls_sum
@@ -707,30 +1052,11 @@ class KoreaInvestmentAPI:
         orders: List[Dict[str, Any]] = []
         seen_order_keys: set = set()
         tr_id: str = "VTTS3018R" if self.is_mock else "TTTS3018R"
-        required_excgs: List[str] = self._get_required_exchanges(symbols)
+        required_excgs: List[str] = self._normalize_us_exchanges_for_inquiry(self._get_required_exchanges(symbols))
         for excg in required_excgs:
             try:
-                url: str = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-nccs"
-                headers: Dict[str, str] = self.get_headers(tr_id)
-                params: Dict[str, str] = {
-                    "CANO": self.account_no,
-                    "ACNT_PRDT_CD": self.account_code,
-                    "OVRS_EXCG_CD": excg,
-                    "SORT_SQN": "DS",
-                    "CTX_AREA_FK200": "",
-                    "CTX_AREA_NK200": ""
-                }
-                res = requests.get(url, headers=headers, params=params, timeout=(1.5, 3.0))
-                try:
-                    data: Dict[str, Any] = res.json()
-                except Exception:
-                    print(f"[미체결 조회 실패 ({excg})] HTTP {res.status_code}")
-                    continue
-
-                if data.get('rt_cd') != '0':
-                    continue
-
-                for item in data.get('output', []):
+                page_items = self._fetch_pending_pages(excg=excg, tr_id=tr_id)
+                for item in page_items:
                     nccs_qty: int = int(float(item.get('nccs_qty', 0)))
                     if nccs_qty <= 0:
                         continue
