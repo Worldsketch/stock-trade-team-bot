@@ -1485,8 +1485,25 @@ class TradingBot:
         if need_calc.any():
             self.positions.loc[need_calc, 'return_rate'] = (
                 self.positions.loc[need_calc, 'current_price'] - self.positions.loc[need_calc, 'avg_price']
-            ) / self.positions.loc[need_calc, 'avg_price']
-        
+            ) / self.positions.loc[need_calc, 'avg_price'] * 100.0
+
+        # legacy 보정: 과거 경로에서 return_rate가 비율(0.05)로 저장된 값을 퍼센트(5.0)로 정규화
+        valid_price_mask: pd.Series = (self.positions['avg_price'] > 0) & (self.positions['current_price'] > 0)
+        if valid_price_mask.any():
+            calc_pct: pd.Series = (
+                (self.positions.loc[valid_price_mask, 'current_price'] - self.positions.loc[valid_price_mask, 'avg_price'])
+                / self.positions.loc[valid_price_mask, 'avg_price']
+                * 100.0
+            )
+            cur_rate: pd.Series = self.positions.loc[valid_price_mask, 'return_rate']
+            legacy_ratio_mask: pd.Series = (
+                (cur_rate != 0.0)
+                & ((cur_rate * 100.0 - calc_pct).abs() < (cur_rate - calc_pct).abs())
+            )
+            if legacy_ratio_mask.any():
+                idx_to_fix = cur_rate.index[legacy_ratio_mask]
+                self.positions.loc[idx_to_fix, 'return_rate'] = self.positions.loc[idx_to_fix, 'return_rate'] * 100.0
+
         self.positions.fillna(0.0, inplace=True)
         if not self._sync_logged:
             self.log(f"데이터 동기화 완료 | 예수금: ${self.last_usd_balance:.2f} | 슬롯: {len(self.symbols)}개", print_stdout=False)

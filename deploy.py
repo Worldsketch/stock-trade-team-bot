@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """서버 배포 스크립트 - .env에서 접속 정보를 읽어 자동 배포"""
+import argparse
+from datetime import datetime, timedelta
 import subprocess
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo
+import shlex
 from dotenv import load_dotenv
 import os
 
@@ -27,9 +31,8 @@ def run(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, shell=True, capture_output=True, text=True, check=check)
 
 
-def deploy() -> None:
-    print(f"\n🚀 배포 시작: {TARGET}:{DEPLOY_PATH}")
-
+def upload_files() -> None:
+    print(f"\n📦 파일 업로드 시작: {TARGET}:{DEPLOY_PATH}")
     print("\n📦 파일 업로드 중...")
     for f in DEPLOY_FILES:
         if Path(f).exists():
@@ -43,15 +46,102 @@ def deploy() -> None:
         if Path(d).exists():
             run(f"ssh -o ConnectTimeout=10 {TARGET} 'mkdir -p {DEPLOY_PATH}/{d}'")
             run(f"scp -o ConnectTimeout=10 -r {d} {TARGET}:{DEPLOY_PATH}/")
+    print("\n✅ 파일 업로드 완료")
 
+
+def restart_now() -> None:
     print("\n🔄 PM2 재시작 중...")
     result = run(f"ssh -o ConnectTimeout=10 {TARGET} 'cd {DEPLOY_PATH} && pm2 restart trade-bot'")
     print(result.stdout)
 
-    print("\n✅ 배포 완료!")
+    print("\n✅ 재시작 완료!")
     result = run(f"ssh -o ConnectTimeout=10 {TARGET} 'sleep 3 && pm2 status trade-bot'")
     print(result.stdout)
 
 
+def _parse_schedule_time(schedule: str, tz_name: str) -> datetime:
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    text = schedule.strip()
+
+    # HH:MM 형식이면 오늘/내일로 자동 보정
+    try:
+        hm = datetime.strptime(text, "%H:%M")
+        target = now.replace(hour=hm.hour, minute=hm.minute, second=0, microsecond=0)
+        if target <= now:
+            target = target + timedelta(days=1)
+        return target
+    except ValueError:
+        pass
+
+    # YYYY-MM-DD HH:MM 형식
+    try:
+        dt = datetime.strptime(text, "%Y-%m-%d %H:%M")
+        return dt.replace(tzinfo=tz, second=0, microsecond=0)
+    except ValueError:
+        pass
+
+    # YYYY-MM-DD HH:MM:SS 형식
+    try:
+        dt = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+        return dt.replace(tzinfo=tz, microsecond=0)
+    except ValueError as exc:
+        raise ValueError("시간 형식 오류: 'HH:MM' 또는 'YYYY-MM-DD HH:MM[:SS]'를 사용하세요.") from exc
+
+
+def schedule_restart(schedule: str, tz_name: str) -> None:
+    target_dt = _parse_schedule_time(schedule, tz_name)
+    now_dt = datetime.now(ZoneInfo(tz_name))
+    delay_sec = int((target_dt - now_dt).total_seconds())
+    if delay_sec <= 0:
+        raise ValueError("예약 시간이 현재보다 이후여야 합니다.")
+
+    remote_path = shlex.quote(DEPLOY_PATH)
+    remote_log = shlex.quote(f"{DEPLOY_PATH}/deploy_scheduled_restart.log")
+    remote_script = (
+        f"LOG={remote_log}; "
+        f"(sleep {delay_sec}; cd {remote_path} && "
+        f"pm2 restart trade-bot >> \"$LOG\" 2>&1 && "
+        f"pm2 status trade-bot >> \"$LOG\" 2>&1) >/dev/null 2>&1 &"
+    )
+    run(f"ssh -o ConnectTimeout=10 {TARGET} {shlex.quote(remote_script)}")
+    print(
+        f"\n🕒 재시작 예약 완료: {target_dt.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+        f"(약 {delay_sec}초 후)"
+    )
+    print(f"📄 서버 로그: {DEPLOY_PATH}/deploy_scheduled_restart.log")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="파일 업로드 + PM2 재시작 배포 스크립트")
+    parser.add_argument("--upload-only", action="store_true", help="서버에 파일만 업로드하고 재시작하지 않음")
+    parser.add_argument("--restart-only", action="store_true", help="파일 업로드 없이 PM2만 재시작")
+    parser.add_argument(
+        "--schedule-restart",
+        type=str,
+        default="",
+        help="재시작 예약 시간 (예: '21:50' 또는 '2026-03-17 21:50')",
+    )
+    parser.add_argument(
+        "--timezone",
+        type=str,
+        default="Asia/Seoul",
+        help="예약 시간 해석 타임존 (기본: Asia/Seoul)",
+    )
+    args = parser.parse_args()
+    if args.upload_only and args.restart_only:
+        parser.error("--upload-only 와 --restart-only 는 동시에 사용할 수 없습니다.")
+    return args
+
+
 if __name__ == "__main__":
-    deploy()
+    args = parse_args()
+    print(f"\n🚀 배포 작업 시작: {TARGET}:{DEPLOY_PATH}")
+
+    if not args.restart_only:
+        upload_files()
+
+    if args.schedule_restart:
+        schedule_restart(args.schedule_restart, args.timezone)
+    elif not args.upload_only:
+        restart_now()

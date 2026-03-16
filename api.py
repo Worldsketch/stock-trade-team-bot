@@ -659,13 +659,10 @@ class KoreaInvestmentAPI:
             except Exception as e:
                 print(f"[실전 원화 예수금 조회 에러] {_format_safe_error(e)}")
 
-            tot_evlu_pfls_sum: float = 0.0
-            tot_pchs_amt_sum: float = 0.0
-            tot_stck_evlu_sum: float = 0.0
             required_excgs: List[str] = self._normalize_us_exchanges_for_inquiry(self._get_required_exchanges(symbols))
             for excg in required_excgs:
                 try:
-                    pos_items, pos_summaries = self._fetch_overseas_balance_pages(excg=excg, tr_crcy_cd="USD")
+                    pos_items, _pos_summaries = self._fetch_overseas_balance_pages(excg=excg, tr_crcy_cd="USD")
                     for item in pos_items:
                         symbol: Optional[str] = item.get('ovrs_pdno')
                         qty: float = float(item.get('ovrs_cblc_qty', 0))
@@ -682,15 +679,8 @@ class KoreaInvestmentAPI:
                                 "evlu_pfls": evlu_pfls, "return_rate": evlu_pfls_rt,
                                 "pchs_amt": pchs_amt
                             })
-                    for summary in pos_summaries:
-                        tot_evlu_pfls_sum += float(summary.get('ovrs_tot_pfls', 0))
-                        tot_pchs_amt_sum += float(summary.get('frcr_pchs_amt1', 0))
-                        tot_stck_evlu_sum += float(summary.get('ovrs_stck_evlu_amt', 0))
                 except Exception as e:
                     print(f"[실전 포지션 조회 에러 ({excg})] {_format_safe_error(e)}")
-            result["tot_evlu_pfls"] = tot_evlu_pfls_sum
-            result["tot_pchs_amt"] = tot_pchs_amt_sum
-            result["tot_stck_evlu"] = tot_stck_evlu_sum
 
             # 거래소별 조회 시 동일 심볼이 중복 응답되는 경우가 있어 심볼 기준으로 정규화
             if positions:
@@ -717,6 +707,10 @@ class KoreaInvestmentAPI:
                         deduped_positions[sym] = pos
                 positions = list(deduped_positions.values())
 
+            # 연속조회 output2(summary)는 페이지별로 반복될 수 있어 포지션 합산값을 기준으로 총계를 계산
+            result["tot_evlu_pfls"] = float(sum(float(p.get("evlu_pfls", 0.0) or 0.0) for p in positions))
+            result["tot_pchs_amt"] = float(sum(float(p.get("pchs_amt", 0.0) or 0.0) for p in positions))
+            result["tot_stck_evlu"] = float(sum(float(p.get("evlu_amt", 0.0) or 0.0) for p in positions))
             result["usd_balance"] = usd_balance
             result["positions"] = positions
             return result

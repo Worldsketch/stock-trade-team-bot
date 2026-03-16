@@ -161,5 +161,9 @@ python app.py
 ## 배포
 
 ```bash
-python deploy.py   # .env의 DEPLOY_HOST로 scp + pm2 restart
+python deploy.py                                  # 업로드 + 즉시 재시작
+python deploy.py --upload-only                   # 파일만 선업로드
+python deploy.py --restart-only                  # 업로드 없이 즉시 재시작
+python deploy.py --upload-only --schedule-restart "21:50"   # 파일 업로드 후 지정시간 재시작(Asia/Seoul)
+python deploy.py --schedule-restart "2026-03-17 21:50"      # 절대시간 재시작 예약
 ```
