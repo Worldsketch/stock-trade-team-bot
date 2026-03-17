@@ -28,19 +28,35 @@ LEVERAGED_ETF_MAP: Dict[str, str] = {
     'WEBL': 'DJUSTC', 'BITX': 'BTC',
 }
 
-SMART_BUY_INITIAL_PREMIUM: float = 0.002  # +0.2%
+SMART_BUY_INITIAL_PREMIUM: float = 0.001  # +0.1%
 SMART_BUY_REPRICE_STEPS: List[Tuple[int, float]] = [
-    (3, 0.002),    # 3초: 현재가 기준 +0.2%
-    (15, 0.0035),  # 15초: 현재가 기준 +0.35%
-    (30, 0.005),   # 30초: 현재가 기준 +0.5%
-    (45, 0.008),   # 45초: 현재가 기준 +0.8%
+    (8, 0.002),    # 8초: 현재가 기준 +0.2%
+    (20, 0.003),   # 20초: 현재가 기준 +0.3%
+    (35, 0.0045),  # 35초: 현재가 기준 +0.45%
+    (55, 0.006),   # 55초: 현재가 기준 +0.6%
+    (90, 0.008),   # 90초: 현재가 기준 +0.8%
 ]
 SMART_BUY_MONITOR_SEC: int = 300
+TRAILING_SELL_INITIAL_DISCOUNT: float = 0.005  # -0.5%
+TRAILING_SELL_REPRICE_STEPS: List[Tuple[int, float]] = [
+    (5, 0.007),   # 5초: 현재가 기준 -0.7%
+    (12, 0.010),  # 12초: 현재가 기준 -1.0%
+    (25, 0.012),  # 25초: 현재가 기준 -1.2%
+]
+TRAILING_SELL_MONITOR_SEC: int = 300
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,14}$")
 
 
 def _is_valid_symbol(symbol: str) -> bool:
     return bool(SYMBOL_PATTERN.fullmatch(str(symbol or "").strip().upper()))
+
+
+def _parse_env_rate(name: str, default: float = 0.0) -> float:
+    try:
+        value = float(str(os.getenv(name, default)).strip())
+        return max(0.0, value)
+    except Exception:
+        return max(0.0, default)
 
 
 class SlotManager:
@@ -239,6 +255,9 @@ class TradingBot:
 
         # 매매 내역 기록
         self.trade_log_file: str = "trade_log.json"
+        self.sell_fee_rate: float = _parse_env_rate("SELL_FEE_RATE", 0.0025)
+        self.sell_tax_rate: float = _parse_env_rate("SELL_TAX_RATE", 0.0)
+        self.sell_cost_rate: float = self.sell_fee_rate + self.sell_tax_rate
 
         # 예수금 비중 알림 (하루 1번)
         self._cash_alert_40_sent: str = ""
@@ -984,7 +1003,18 @@ class TradingBot:
         except Exception as e:
             print(f"[자산 스냅샷 저장 오류] {e}")
 
-    def _log_trade(self, symbol: str, side: str, qty: int, price: float, amount: float, reason: str, avg_price: float = 0.0) -> None:
+    def _log_trade(
+        self,
+        symbol: str,
+        side: str,
+        qty: int,
+        price: float,
+        amount: float,
+        reason: str,
+        avg_price: float = 0.0,
+        status: str = "filled",
+        ordered_qty: int = 0,
+    ) -> None:
         """매매 내역을 trade_log.json에 기록합니다."""
         try:
             log: List[Dict[str, Any]] = []
@@ -1001,15 +1031,24 @@ class TradingBot:
                 "price": round(price, 2),
                 "amount": round(amount, 2),
                 "reason": reason,
-                "balance_after": round(self.last_usd_balance, 2)
+                "balance_after": round(self.last_usd_balance, 2),
+                "status": status,
             }
+            if ordered_qty > 0:
+                entry["ordered_qty"] = int(ordered_qty)
 
             if side == "매도" and avg_price > 0:
-                pnl: float = (price - avg_price) * qty
-                pnl_pct: float = (price - avg_price) / avg_price * 100
                 entry["avg_price"] = round(avg_price, 2)
-                entry["pnl"] = round(pnl, 2)
-                entry["pnl_pct"] = round(pnl_pct, 2)
+                entry["sell_fee_rate"] = round(self.sell_fee_rate, 6)
+                entry["sell_tax_rate"] = round(self.sell_tax_rate, 6)
+                entry["sell_cost_rate"] = round(self.sell_cost_rate, 6)
+                sell_cost: float = qty * price * self.sell_cost_rate
+                entry["sell_cost"] = round(sell_cost, 2)
+                if status == "filled":
+                    pnl: float = (price - avg_price) * qty - sell_cost
+                    pnl_pct: float = (pnl / (avg_price * qty) * 100) if avg_price > 0 and qty > 0 else 0.0
+                    entry["pnl"] = round(pnl, 2)
+                    entry["pnl_pct"] = round(pnl_pct, 2)
 
             log.append(entry)
 
@@ -1020,6 +1059,87 @@ class TradingBot:
                 json.dump(log, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"[매매기록 저장 오류] {e}")
+
+    def finalize_pending_sell_trade(
+        self,
+        symbol: str,
+        ordered_qty: int,
+        filled_qty: int,
+        fill_price: float,
+        completed: bool,
+    ) -> bool:
+        """최근 pending 매도 로그를 체결 결과로 확정 반영합니다."""
+        try:
+            if not os.path.exists(self.trade_log_file):
+                return False
+            with open(self.trade_log_file, "r", encoding="utf-8") as f:
+                log: List[Dict[str, Any]] = json.load(f)
+            if not isinstance(log, list) or not log:
+                return False
+
+            target_idx: int = -1
+            for i in range(len(log) - 1, -1, -1):
+                entry: Dict[str, Any] = log[i]
+                if str(entry.get("symbol", "")).upper() != symbol.upper():
+                    continue
+                if entry.get("side") != "매도":
+                    continue
+                if str(entry.get("status", "")).lower() not in ("pending", "partially_filled"):
+                    continue
+                target_idx = i
+                break
+            if target_idx < 0:
+                return False
+
+            entry = log[target_idx]
+            entry_ordered: int = int(float(entry.get("ordered_qty", entry.get("qty", ordered_qty) or 0)))
+            if entry_ordered <= 0:
+                entry_ordered = max(0, int(ordered_qty))
+
+            done_qty: int = max(0, min(entry_ordered, int(filled_qty)))
+            now_kst: str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+            entry["updated_at"] = now_kst
+            entry["filled_qty"] = done_qty
+            entry["ordered_qty"] = entry_ordered
+
+            if done_qty <= 0:
+                entry["status"] = "unfilled"
+                entry["amount"] = 0.0
+                entry["qty"] = 0
+                entry["pnl"] = 0.0
+                entry["pnl_pct"] = 0.0
+                entry["sell_cost"] = 0.0
+            else:
+                price: float = round(max(0.0, float(fill_price)), 2)
+                if price <= 0:
+                    price = float(entry.get("price", 0.0) or 0.0)
+                amount: float = done_qty * price
+                sell_cost: float = amount * self.sell_cost_rate
+                avg_price: float = float(entry.get("avg_price", 0.0) or 0.0)
+                pnl: float = (price - avg_price) * done_qty - sell_cost if avg_price > 0 else 0.0
+                pnl_pct: float = (pnl / (avg_price * done_qty) * 100) if avg_price > 0 and done_qty > 0 else 0.0
+                entry["status"] = "filled" if completed and done_qty >= entry_ordered else "partially_filled"
+                entry["qty"] = done_qty
+                entry["price"] = round(price, 2)
+                entry["amount"] = round(amount, 2)
+                entry["sell_fee_rate"] = round(self.sell_fee_rate, 6)
+                entry["sell_tax_rate"] = round(self.sell_tax_rate, 6)
+                entry["sell_cost_rate"] = round(self.sell_cost_rate, 6)
+                entry["sell_cost"] = round(sell_cost, 2)
+                entry["pnl"] = round(pnl, 2)
+                entry["pnl_pct"] = round(pnl_pct, 2)
+                if entry["status"] == "partially_filled":
+                    entry["remaining_qty"] = max(0, entry_ordered - done_qty)
+                    reason: str = str(entry.get("reason", "")).strip()
+                    if "[부분체결]" not in reason:
+                        entry["reason"] = f"{reason} [부분체결]".strip()
+
+            with open(self.trade_log_file, "w", encoding="utf-8") as f:
+                json.dump(log, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"[매도 체결 반영 오류] {e}")
+            return False
 
     def mark_trade_cancelled(self, symbol: str, cancelled_qty: int, order_no: str = "") -> bool:
         """최근 매수 주문 로그를 매수취소로 정정합니다."""
@@ -1536,7 +1656,7 @@ class TradingBot:
                     self.check_trailing_stop(symbol, price, qty)
         
     def check_trailing_stop(self, symbol: str, current_price: float, qty: float) -> None:
-        """Strategy E: 최고점 대비 -25% 하락 시 보유량의 50%만 매도 (부분 매도)"""
+        """Strategy E: HWM 하락 임계치 도달 시 부분 매도(추격형 지정가)"""
         hwm_price: float = self.hwm.get(symbol, 0.0)
         if hwm_price <= 0:
             return
@@ -1545,26 +1665,50 @@ class TradingBot:
         
         if drawdown <= self.trailing_stop_threshold:
             sell_qty: int = max(1, int(qty * self.trailing_sell_pct))
-            sell_price: float = current_price * 0.99
+            sell_price: float = round(current_price * (1.0 - TRAILING_SELL_INITIAL_DISCOUNT), 2)
+            now_et: datetime = self.get_eastern_time()
+            now_kst: datetime = self.get_korean_time()
+            prefer_daytime: bool = self.is_daytime_market_open(now_kst) and (not self.is_active_trading_time(now_et))
             self.log(f"🚨 [트레일링 스탑 발동] {symbol} 최고점 대비 {sell_qty}주 부분 매도!", send_tg=False)
-            success: bool = self.api.place_order(symbol, sell_qty, sell_price, is_buy=False)
+            success: bool = self.api.place_order(
+                symbol,
+                sell_qty,
+                sell_price,
+                is_buy=False,
+                prefer_daytime=prefer_daytime,
+            )
             if success:
                 self.hwm[symbol] = current_price
                 self._save_hwm()
                 
                 sold_amount: float = sell_qty * sell_price
-                self.last_usd_balance += sold_amount
-                self.last_krw_balance += sold_amount * self.exchange_rate
                 ts_avg: float = float(self.positions.loc[self.positions['symbol'] == symbol, 'avg_price'].values[0]) if not self.positions.empty and (self.positions['symbol'] == symbol).any() else 0.0
-                self._log_trade(symbol, "매도", sell_qty, sell_price, sold_amount, f"[{self._get_mode_label()}] 트레일링 스탑 ({drawdown*100:.1f}%)", avg_price=ts_avg)
+                self._log_trade(
+                    symbol,
+                    "매도",
+                    sell_qty,
+                    sell_price,
+                    sold_amount,
+                    f"[{self._get_mode_label()}] 트레일링 스탑 ({drawdown*100:.1f}%)",
+                    avg_price=ts_avg,
+                    status="pending",
+                    ordered_qty=sell_qty,
+                )
                 
-                msg: str = f"🛡️ [부분 매도 체결]\n"
+                msg: str = f"🛡️ [트레일링 스탑 주문 접수]\n"
                 msg += f"종목: {symbol}\n"
-                msg += f"단가/수량: ${sell_price:.2f} x {sell_qty}주 (보유의 {self.trailing_sell_pct*100:.0f}%)\n"
-                msg += f"총액: ${sold_amount:,.2f} (약 {sold_amount * self.exchange_rate:,.0f}원)\n"
+                msg += f"주문가/수량: ${sell_price:.2f} x {sell_qty}주 (보유의 {self.trailing_sell_pct*100:.0f}%)\n"
+                msg += "방식: 추격형 지정가 (시작 -0.5%, 최대 -1.2%)\n"
+                msg += f"예상 금액: ${sold_amount:,.2f} (약 {sold_amount * self.exchange_rate:,.0f}원)\n"
                 msg += f"사유: 최고점(${hwm_price:.2f}) 대비 {drawdown*100:.2f}% 하락 (트레일링 스탑)\n"
-                msg += f"잔여 보유: {int(qty - sell_qty)}주 | 잔여 현금: ${self.last_usd_balance:,.2f} (약 {self.last_krw_balance:,.0f}원)"
+                msg += f"잔여 보유(예상): {int(qty - sell_qty)}주"
                 self.send_telegram_message(msg)
+                self._start_trailing_sell_manager(
+                    symbol=symbol,
+                    total_qty=sell_qty,
+                    initial_price=sell_price,
+                    prefer_daytime=prefer_daytime,
+                )
         
     def _get_mode_label(self) -> str:
         if self.strategy_mode == "auto":
@@ -1698,6 +1842,136 @@ class TradingBot:
                 )
             except Exception as e:
                 self.log(f"[매수 추격형 오류] {symbol}: {e}", send_tg=False)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _start_trailing_sell_manager(
+        self,
+        symbol: str,
+        total_qty: int,
+        initial_price: float,
+        prefer_daytime: bool,
+    ) -> None:
+        def _worker() -> None:
+            start_ts: float = time.time()
+            last_price: float = initial_price
+            last_remaining: int = total_qty
+            try:
+                for after_sec, discount in TRAILING_SELL_REPRICE_STEPS:
+                    sleep_sec: float = after_sec - (time.time() - start_ts)
+                    if sleep_sec > 0:
+                        time.sleep(sleep_sec)
+
+                    orders: List[Dict[str, Any]] = self.api.get_pending_orders(symbols=["__ALL__"])
+                    pending: Optional[Dict[str, Any]] = self._pick_pending_order(orders, symbol, "매도")
+                    if not pending:
+                        filled_qty: int = max(0, total_qty - last_remaining) or total_qty
+                        filled_amount: float = filled_qty * last_price
+                        self.finalize_pending_sell_trade(
+                            symbol=symbol,
+                            ordered_qty=total_qty,
+                            filled_qty=filled_qty,
+                            fill_price=last_price,
+                            completed=True,
+                        )
+                        self.send_telegram_message(
+                            f"✅ [트레일링 스탑 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주\n"
+                            f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f}"
+                        )
+                        self.log(f"✅ [트레일링 체결확인] {symbol} {filled_qty}주 @ ${last_price:.2f}", send_tg=False)
+                        return
+
+                    try:
+                        remaining_qty: int = int(float(pending.get("remaining_qty", 0)))
+                    except Exception:
+                        remaining_qty = 0
+                    if remaining_qty <= 0:
+                        continue
+                    last_remaining = remaining_qty
+
+                    order_no: str = str(pending.get("order_no", "")).strip()
+                    if not order_no:
+                        continue
+
+                    canceled: bool = self.api.cancel_order(
+                        order_no=order_no,
+                        symbol=symbol,
+                        remaining_qty=remaining_qty,
+                        prefer_daytime=prefer_daytime,
+                    )
+                    if not canceled:
+                        continue
+
+                    time.sleep(0.25)
+                    current_price: float = float(self.api.get_current_price(symbol, prefer_daytime=prefer_daytime) or 0.0)
+                    if current_price <= 0:
+                        current_price = last_price
+                    new_price: float = round(current_price * (1.0 - discount), 2)
+                    if new_price <= 0:
+                        continue
+
+                    reordered: bool = self.api.place_order(
+                        symbol=symbol,
+                        quantity=remaining_qty,
+                        price=new_price,
+                        is_buy=False,
+                        prefer_daytime=prefer_daytime,
+                    )
+                    if reordered:
+                        last_price = new_price
+                        self.log(
+                            f"🔁 [트레일링 재호가] {symbol} 잔량 {remaining_qty}주 @ ${new_price:.2f} "
+                            f"(현재가 기준 -{discount*100:.1f}%)",
+                            send_tg=False,
+                        )
+                    else:
+                        self.send_telegram_message(
+                            f"⚠️ [트레일링 재호가 실패]\n종목: {symbol}\n잔량: {remaining_qty}주\n"
+                            f"재주문가: ${new_price:.2f}\n수동으로 미체결 주문을 확인해주세요."
+                        )
+                        self.log(f"⚠️ [트레일링 재호가 실패] {symbol} 잔량 {remaining_qty}주 @ ${new_price:.2f}", send_tg=False)
+                        return
+
+                while (time.time() - start_ts) < TRAILING_SELL_MONITOR_SEC:
+                    time.sleep(5)
+                    orders = self.api.get_pending_orders(symbols=["__ALL__"])
+                    pending = self._pick_pending_order(orders, symbol, "매도")
+                    if not pending:
+                        filled_qty = max(0, total_qty - last_remaining) or total_qty
+                        filled_amount = filled_qty * last_price
+                        self.finalize_pending_sell_trade(
+                            symbol=symbol,
+                            ordered_qty=total_qty,
+                            filled_qty=filled_qty,
+                            fill_price=last_price,
+                            completed=True,
+                        )
+                        self.send_telegram_message(
+                            f"✅ [트레일링 스탑 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주\n"
+                            f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f}"
+                        )
+                        self.log(f"✅ [트레일링 체결확인] {symbol} {filled_qty}주 @ ${last_price:.2f}", send_tg=False)
+                        return
+                    try:
+                        last_remaining = int(float(pending.get("remaining_qty", last_remaining)))
+                    except Exception:
+                        pass
+
+                partial_filled_qty: int = max(0, total_qty - last_remaining)
+                self.finalize_pending_sell_trade(
+                    symbol=symbol,
+                    ordered_qty=total_qty,
+                    filled_qty=partial_filled_qty,
+                    fill_price=last_price,
+                    completed=False,
+                )
+                self.send_telegram_message(
+                    f"⏰ [트레일링 스탑 미체결]\n종목: {symbol}\n잔량: {last_remaining}주\n"
+                    f"최근 주문가: ${last_price:.2f}\n5분간 완전 체결되지 않았습니다."
+                )
+                self.log(f"⏰ [트레일링 미체결] {symbol} 잔량 {last_remaining}주 @ ${last_price:.2f}", send_tg=False)
+            except Exception as e:
+                self.log(f"[트레일링 추격형 오류] {symbol}: {e}", send_tg=False)
 
         threading.Thread(target=_worker, daemon=True).start()
 

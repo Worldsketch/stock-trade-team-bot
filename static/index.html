@@ -578,7 +578,7 @@
         const INITIAL_PENDING_DELAY_MS = 1200;
         const INITIAL_CHART_DELAY_MS = 350;
         const INITIAL_QUOTE_DELAY_MS = 700;
-        const SMART_SELL_INITIAL_DISCOUNT = 0.003; // -0.3%
+        const SMART_SELL_INITIAL_DISCOUNT = 0.001; // -0.1%
 
         function persistChartSymbol(symbol) {
             if (!symbol) return;
@@ -1717,8 +1717,8 @@
         function isMarketTradable() {
             const byServerUs = lastData?.market_open === true;
             const byServerDay = lastData?.daytime_open === true;
-            if (byServerDay) return { open: true, session: '데이장', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
-            if (byServerUs) return { open: true, session: '미국장', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
+            if (byServerDay) return { open: true, session: '데이장', desc: '추격형 지정가 (시작 -0.1%, 최대 -0.8%)' };
+            if (byServerUs) return { open: true, session: '미국장', desc: '추격형 지정가 (시작 -0.1%, 최대 -0.8%)' };
 
             // 서버 상태 수신 전/예외 시 브라우저 시간 기준 폴백
             const now = new Date();
@@ -1726,16 +1726,16 @@
             const kDay = kst.getDay();
             const kMin = kst.getHours() * 60 + kst.getMinutes();
             if (kDay >= 1 && kDay <= 5 && kMin >= 540 && kMin < 960) {
-                return { open: true, session: '데이장', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
+                return { open: true, session: '데이장', desc: '추격형 지정가 (시작 -0.1%, 최대 -0.8%)' };
             }
 
             const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
             const day = et.getDay();
             const t = et.getHours() * 60 + et.getMinutes();
             if (day !== 0 && day !== 6) {
-                if (t >= 240 && t < 570) return { open: true, session: '프리마켓', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
-                if (t >= 570 && t < 960) return { open: true, session: '정규장', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
-                if (t >= 960 && t < 1200) return { open: true, session: '애프터마켓', desc: '추격형 지정가 (시작 -0.3%, 최대 -1.2%)' };
+                if (t >= 240 && t < 570) return { open: true, session: '프리마켓', desc: '추격형 지정가 (시작 -0.1%, 최대 -0.8%)' };
+                if (t >= 570 && t < 960) return { open: true, session: '정규장', desc: '추격형 지정가 (시작 -0.1%, 최대 -0.8%)' };
+                if (t >= 960 && t < 1200) return { open: true, session: '애프터마켓', desc: '추격형 지정가 (시작 -0.1%, 최대 -0.8%)' };
             }
             return { open: false, reason: '장 마감 시간' };
         }
@@ -1778,8 +1778,8 @@
             const rate = lastData?.exchange_rate || 1400;
             const sellPrice = Math.round((curPrice * (1 - SMART_SELL_INITIAL_DISCOUNT)) * 100) / 100;
             const estAmount = sellQty * sellPrice;
-            const feeRate = Number(lastData?.sell_fee_rate || 0);
-            const taxRate = Number(lastData?.sell_tax_rate || 0);
+            const feeRate = Number(lastData?.sell_fee_rate ?? 0.0025);
+            const taxRate = Number(lastData?.sell_tax_rate ?? 0);
             const totalCostRate = Math.max(0, feeRate + taxRate);
             const estCost = estAmount * totalCostRate;
             const netAmount = estAmount - estCost;
@@ -1787,6 +1787,7 @@
             const profit = grossProfit - estCost;
             const costBasis = avgPrice > 0 ? (avgPrice * sellQty) : 0;
             const profitPct = costBasis > 0 ? (profit / costBasis * 100) : 0;
+            const feeLabel = `수수료 ${(feeRate * 100).toFixed(3)}%` + (taxRate > 0 ? ` + 제세금 ${(taxRate * 100).toFixed(3)}%` : '');
 
             const badge = document.getElementById('sellModalBadge');
             const sellSc = getSlotColor(symbol);
@@ -1813,7 +1814,7 @@
                     <span id="sellModalAvgPrice2" class="text-sm font-semibold text-white">$${avgPrice.toFixed(2)} (${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원)</span>
                 </div>
                 <div class="flex justify-between">
-                    <span class="text-xs text-slate-400">예상 수수료/제비용</span>
+                    <span class="text-xs text-slate-400">예상 수수료/제비용 (${feeLabel})</span>
                     <span class="text-sm font-semibold text-slate-300">$${estCost.toFixed(2)} (${(estCost * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원) / ${(totalCostRate * 100).toFixed(3)}%</span>
                 </div>
                 <div class="flex justify-between">
@@ -1843,7 +1844,7 @@
                 <div class="bg-slate-900/60 rounded-xl p-4 space-y-2.5">
                     <div class="flex justify-between"><span class="text-xs text-slate-400">매도 비율</span><span id="sellModalPercent" class="text-sm font-bold text-rose-400"></span></div>
                     <div class="flex justify-between"><span class="text-xs text-slate-400">매도 수량</span><span id="sellModalQty" class="text-sm font-bold text-white"></span></div>
-                    <div class="flex justify-between"><span class="text-xs text-slate-400">예상 주문가</span><span id="sellModalPrice" class="text-sm font-bold text-white"></span></div>
+                    <div class="flex justify-between"><span class="text-xs text-slate-400">예상 체결가(통상)</span><span id="sellModalPrice" class="text-sm font-bold text-white"></span></div>
                     <div class="border-t border-slate-700/50 pt-2.5 flex justify-between"><span class="text-xs text-slate-400">예상 순수령 금액</span><span id="sellModalAmount" class="text-sm font-bold text-emerald-400"></span></div>
                 </div>
                 <div id="sellModalPnl" class="bg-slate-900/60 rounded-xl p-4 space-y-2.5">
@@ -2126,7 +2127,7 @@
             html += mkRow(`${(p.dca_4_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w4_ratio*100).toFixed(1)}%`);
             html += mkRow(`${(p.dca_8_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w8_ratio*100).toFixed(1)}%`);
             html += mkRow('RSI 과매도 보너스', `총 자산의 ${(p.w4_ratio*100).toFixed(1)}% (RSI<30)`);
-            html += mkRow('매수 주문 방식', '추격형 지정가 (시작 +0.2%)');
+            html += mkRow('매수 주문 방식', '추격형 지정가 (시작 +0.1%)');
             html += '</div></div>';
 
             html += '<div>';
@@ -2134,7 +2135,9 @@
             html += '<div class="bg-slate-850 rounded-lg p-4 border border-slate-700/50">';
             html += mkRow('발동 조건', `HWM 대비 ${(p.trailing_stop_threshold*100).toFixed(0)}%`, 'text-rose-400');
             html += mkRow('매도 비율', `보유량의 ${(p.trailing_sell_pct*100).toFixed(0)}%`);
-            html += mkRow('매도 지정가', '현재가 -1.0%');
+            html += mkRow('매도 지정가', '추격형 지정가 (시작 -0.5%)');
+            html += mkRow('수동 매도 방식', '추격형 지정가 (시작 -0.1%)');
+            html += mkRow('수동 매도 비용', '수수료 0.25% (기본)');
             html += '</div></div>';
 
             html += '</div>';

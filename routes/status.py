@@ -19,7 +19,8 @@ def _parse_env_rate(name: str, default: float = 0.0) -> float:
 
 def _get_sell_cost_rates() -> Dict[str, float]:
     return {
-        "sell_fee_rate": _parse_env_rate("SELL_FEE_RATE", 0.0),
+        # 미설정 시 미국주식 수수료 기본값 0.25%
+        "sell_fee_rate": _parse_env_rate("SELL_FEE_RATE", 0.0025),
         "sell_tax_rate": _parse_env_rate("SELL_TAX_RATE", 0.0),
     }
 

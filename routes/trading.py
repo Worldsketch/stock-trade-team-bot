@@ -7,12 +7,13 @@ from fastapi import APIRouter, Depends, Request
 from bot import TradingBot
 from services.live_data_cache import LiveDataCache
 
-SMART_SELL_INITIAL_DISCOUNT: float = 0.003  # -0.3%
+SMART_SELL_INITIAL_DISCOUNT: float = 0.001  # -0.1%
 SMART_SELL_REPRICE_STEPS: List[Tuple[int, float]] = [
-    (3, 0.003),   # 3초: 현재가 기준 -0.3%로 재호가
-    (15, 0.006),  # 15초: 현재가 기준 -0.6%
-    (30, 0.010),  # 30초: 현재가 기준 -1.0%
-    (45, 0.012),  # 45초: 현재가 기준 -1.2%
+    (8, 0.002),   # 8초: 현재가 기준 -0.2%로 재호가
+    (20, 0.003),  # 20초: 현재가 기준 -0.3%
+    (35, 0.0045), # 35초: 현재가 기준 -0.45%
+    (55, 0.006),  # 55초: 현재가 기준 -0.6%
+    (90, 0.008),  # 90초: 현재가 기준 -0.8%
 ]
 SMART_SELL_MONITOR_SEC: int = 300
 
@@ -92,6 +93,13 @@ def create_trading_router(
                             f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f} (약 {krw_filled:,.0f}원)"
                         )
                         bot.log(f"✅ [수동매도 체결확인] {symbol} {filled_qty}주 ({label})")
+                        bot.finalize_pending_sell_trade(
+                            symbol=symbol,
+                            ordered_qty=total_qty,
+                            filled_qty=filled_qty,
+                            fill_price=last_price,
+                            completed=True,
+                        )
                         return
 
                     try:
@@ -170,6 +178,13 @@ def create_trading_router(
                             f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f} (약 {krw_filled:,.0f}원)"
                         )
                         bot.log(f"✅ [수동매도 체결확인] {symbol} {filled_qty}주 ({label})")
+                        bot.finalize_pending_sell_trade(
+                            symbol=symbol,
+                            ordered_qty=total_qty,
+                            filled_qty=filled_qty,
+                            fill_price=last_price,
+                            completed=True,
+                        )
                         return
                     try:
                         last_remaining = int(float(pending.get("remaining_qty", last_remaining)))
@@ -178,6 +193,14 @@ def create_trading_router(
 
                 bot = get_bot()
                 if bot:
+                    partial_filled_qty: int = max(0, total_qty - last_remaining)
+                    bot.finalize_pending_sell_trade(
+                        symbol=symbol,
+                        ordered_qty=total_qty,
+                        filled_qty=partial_filled_qty,
+                        fill_price=last_price,
+                        completed=False,
+                    )
                     bot.send_telegram_message(
                         f"⏰ [수동 매도 미체결]\n종목: {symbol}\n잔량: {last_remaining}주 ({label})\n"
                         f"최근 주문가: ${last_price:.2f}\n5분간 완전 체결되지 않았습니다."
@@ -262,9 +285,10 @@ def create_trading_router(
             is_daytime: bool = bot.is_daytime_market_open(now_kst)
             _ = is_regular  # 향후 세션별 세분화용
             sell_price: float = round(current_price * (1.0 - SMART_SELL_INITIAL_DISCOUNT), 2)
+            max_discount: float = max([d for _, d in SMART_SELL_REPRICE_STEPS], default=SMART_SELL_INITIAL_DISCOUNT)
             order_desc: str = (
                 f"추격형 지정가 ${sell_price:.2f} "
-                f"(시작 -{SMART_SELL_INITIAL_DISCOUNT*100:.1f}%, 최대 -1.2%)"
+                f"(시작 -{SMART_SELL_INITIAL_DISCOUNT*100:.1f}%, 최대 -{max_discount*100:.1f}%)"
             )
 
             success: bool = bot.api.place_order(symbol, sell_qty, sell_price, is_buy=False, prefer_daytime=is_daytime)
@@ -292,6 +316,8 @@ def create_trading_router(
                     est_amount,
                     f"[{bot._get_mode_label()}] 수동 매도 ({label})",
                     avg_price=manual_avg,
+                    status="pending",
+                    ordered_qty=sell_qty,
                 )
                 # 체결 보장과 체결가 개선을 위해 추격형 단계 재호가를 백그라운드에서 실행
                 _start_smart_sell_manager(

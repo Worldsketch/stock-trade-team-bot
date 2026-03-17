@@ -4,6 +4,14 @@ import time
 from typing import Any, Dict, List
 
 
+def _parse_env_rate(name: str, default: float = 0.0) -> float:
+    try:
+        value = float(str(os.getenv(name, default)).strip())
+        return max(0.0, value)
+    except Exception:
+        return max(0.0, default)
+
+
 def migrate_trade_pnl(trade_file: str = "trade_log.json") -> None:
     """기존 매도 기록의 pnl 필드를 평균단가 기반으로 소급 계산합니다."""
     if not os.path.exists(trade_file):
@@ -32,15 +40,24 @@ def migrate_trade_pnl(trade_file: str = "trade_log.json") -> None:
         holding = holdings[symbol]
 
         if side == "매수":
+            buy_status: str = str(trade.get("status", "filled")).lower()
+            if buy_status in ("pending", "cancelled", "partially_cancelled", "unfilled"):
+                continue
             total_cost: float = holding["qty"] * holding["avg_cost"] + quantity * price
             holding["qty"] += quantity
             holding["avg_cost"] = total_cost / holding["qty"] if holding["qty"] > 0 else 0.0
         elif side == "매도" and "pnl" not in trade:
+            status: str = str(trade.get("status", "filled")).lower()
+            if status in ("pending", "cancelled", "unfilled"):
+                continue
             if holding["qty"] > 0 and holding["avg_cost"] > 0:
                 avg_cost: float = holding["avg_cost"]
-                pnl: float = quantity * (price - avg_cost)
-                pnl_pct: float = (price - avg_cost) / avg_cost * 100
+                sell_cost_rate: float = float(trade.get("sell_cost_rate", _parse_env_rate("SELL_FEE_RATE", 0.0025) + _parse_env_rate("SELL_TAX_RATE", 0.0)) or 0.0)
+                sell_cost: float = float(trade.get("sell_cost", quantity * price * sell_cost_rate) or 0.0)
+                pnl: float = quantity * (price - avg_cost) - sell_cost
+                pnl_pct: float = (pnl / (avg_cost * quantity) * 100) if avg_cost > 0 and quantity > 0 else 0.0
                 trade["avg_price"] = round(avg_cost, 2)
+                trade["sell_cost"] = round(sell_cost, 2)
                 trade["pnl"] = round(pnl, 2)
                 trade["pnl_pct"] = round(pnl_pct, 2)
                 holding["qty"] = max(0.0, holding["qty"] - quantity)
@@ -78,12 +95,14 @@ class RealizedPnlCalculator:
         sell_count: int = 0
         win_count: int = 0
         loss_count: int = 0
+        default_sell_cost_rate: float = _parse_env_rate("SELL_FEE_RATE", 0.0025) + _parse_env_rate("SELL_TAX_RATE", 0.0)
 
         for trade in trades:
             symbol: str = trade.get("symbol", "")
             side: str = trade.get("side", "")
-            quantity: float = float(trade.get("qty", 0))
-            price: float = float(trade.get("price", 0))
+            status: str = str(trade.get("status", "filled")).lower()
+            quantity: float = float(trade.get("qty", 0) or 0)
+            price: float = float(trade.get("price", 0) or 0)
             if quantity <= 0 or price <= 0:
                 continue
 
@@ -92,12 +111,18 @@ class RealizedPnlCalculator:
             holding = holdings[symbol]
 
             if side == "매수":
+                if status in ("pending", "cancelled", "partially_cancelled", "unfilled"):
+                    continue
                 total_cost: float = holding["qty"] * holding["avg_cost"] + quantity * price
                 holding["qty"] += quantity
                 holding["avg_cost"] = total_cost / holding["qty"] if holding["qty"] > 0 else 0.0
             elif side == "매도":
+                if status in ("pending", "cancelled", "unfilled"):
+                    continue
                 if holding["qty"] > 0 and holding["avg_cost"] > 0:
-                    pnl: float = quantity * (price - holding["avg_cost"])
+                    sell_cost_rate: float = float(trade.get("sell_cost_rate", default_sell_cost_rate) or default_sell_cost_rate)
+                    sell_cost: float = float(trade.get("sell_cost", quantity * price * sell_cost_rate) or 0.0)
+                    pnl: float = quantity * (price - holding["avg_cost"]) - sell_cost
                     total_pnl += pnl
                     sell_count += 1
                     if pnl >= 0:
