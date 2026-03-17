@@ -1518,7 +1518,7 @@ class TradingBot:
     def _build_live_snapshot(self) -> Dict[str, Any]:
         active_slots = self.slot_manager.get_active_slots()
         slot_map: Dict[str, Dict[str, Any]] = {slot.get("symbol"): slot for slot in active_slots}
-        current_symbols: List[str] = self.symbols
+        current_symbols: List[str] = [str(slot.get("symbol", "")).upper() for slot in active_slots if slot.get("symbol")]
         row_map: Dict[str, Dict[str, Any]] = {}
         if not self.positions.empty:
             for _, row in self.positions.iterrows():
@@ -1561,6 +1561,9 @@ class TradingBot:
                     "pchs_amt": pchs_amt,
                     "is_leveraged": slot_info.get("is_leveraged", False),
                     "base_asset": slot_info.get("base_asset", sym),
+                    "watch_only": bool(slot_info.get("watch_only", False)),
+                    "anchor_price": float(slot_info.get("anchor_price", 0.0) or 0.0),
+                    "anchor_at": str(slot_info.get("anchor_at", "")),
                     "base_price": 0.0,
                 }
             )

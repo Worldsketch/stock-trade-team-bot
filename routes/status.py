@@ -70,6 +70,44 @@ def create_status_router(
             bot_snapshot: Optional[Dict[str, Any]] = bot.get_live_snapshot(max_age_sec=6.0)
             if bot_snapshot:
                 positions_list = list(bot_snapshot.get("positions", []))
+                now_kst = bot.get_korean_time()
+                now_et = bot.get_eastern_time()
+                is_daytime_session: bool = bot.is_daytime_market_open(now_kst)
+                active_slots = bot.slot_manager.get_active_slots()
+                slot_map: Dict[str, Dict[str, Any]] = {slot.get("symbol"): slot for slot in active_slots}
+                existing_symbols = {str(p.get("symbol", "")).upper() for p in positions_list if p.get("symbol")}
+                quote_refresh_budget: int = 1
+
+                for slot in active_slots:
+                    symbol = str(slot.get("symbol", "")).upper()
+                    if not symbol or symbol in existing_symbols:
+                        continue
+                    fallback_price: float = _get_cached_slot_price(symbol, now)
+                    if fallback_price <= 0 and quote_refresh_budget > 0:
+                        quote_refresh_budget -= 1
+                        try:
+                            fallback_price = float(bot.api.get_current_price(symbol, prefer_daytime=is_daytime_session) or 0.0)
+                            _set_cached_slot_price(symbol, fallback_price, now)
+                        except Exception:
+                            pass
+                    positions_list.append(
+                        {
+                            "symbol": symbol,
+                            "quantity": 0.0,
+                            "avg_price": 0.0,
+                            "current_price": fallback_price,
+                            "return_rate": 0.0,
+                            "is_leveraged": slot.get("is_leveraged", False),
+                            "base_asset": slot.get("base_asset", symbol),
+                            "watch_only": bool(slot.get("watch_only", False)),
+                            "anchor_price": float(slot.get("anchor_price", 0.0) or 0.0),
+                            "anchor_at": str(slot.get("anchor_at", "")),
+                            "base_price": 0.0,
+                        }
+                    )
+
+                slot_order: Dict[str, int] = {str(slot.get("symbol", "")).upper(): idx for idx, slot in enumerate(active_slots)}
+                positions_list.sort(key=lambda position: slot_order.get(str(position.get("symbol", "")).upper(), 999))
 
                 daily_pnl_usd: float = 0.0
                 for position in positions_list:
@@ -80,9 +118,6 @@ def create_status_router(
                     if quantity > 0 and previous_close > 0 and current_price > 0:
                         daily_pnl_usd += (current_price - previous_close) * quantity
 
-                now_kst = bot.get_korean_time()
-                now_et = bot.get_eastern_time()
-                is_daytime_session: bool = bot.is_daytime_market_open(now_kst)
                 usd_balance = float(bot_snapshot.get("usd_balance", 0.0) or 0.0)
                 tot_stck_evlu = float(bot_snapshot.get("tot_stck_evlu", 0.0) or 0.0)
                 result = {
@@ -102,7 +137,7 @@ def create_status_router(
                     "strategy_mode": bot.strategy_mode,
                     "auto_active": bot.auto_active_mode,
                     "realized_pnl": realized_pnl.calculate(),
-                    "slots": bot.slot_manager.get_active_slots(),
+                    "slots": active_slots,
                     "max_slots": bot.slot_manager.max_slots,
                     "market_open": bot.is_active_trading_time(now_et),
                     "daytime_open": is_daytime_session,

@@ -415,6 +415,10 @@
                             <span id="sellModalAvgPrice" class="text-sm font-semibold text-white"></span>
                         </div>
                         <div class="flex justify-between">
+                            <span class="text-xs text-slate-400">예상 수수료</span>
+                            <span id="sellModalFee" class="text-sm font-semibold text-slate-300"></span>
+                        </div>
+                        <div class="flex justify-between">
                             <span class="text-xs text-slate-400">예상 손익</span>
                             <span id="sellModalProfit" class="text-sm font-bold"></span>
                         </div>
@@ -1818,31 +1822,21 @@
 
             const market = isMarketTradable();
             if (market.open) {
-                document.querySelector('#sellModalHeader p').textContent = `매도 주문 확인 · ${market.session} · ${market.desc}`;
+                const headerDesc = document.querySelector('#sellModalHeader p');
+                if (headerDesc) headerDesc.textContent = `매도 주문 확인 · ${market.session} · ${market.desc}`;
             }
             document.getElementById('sellModalPrice').textContent = `${(sellPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${sellPrice.toFixed(2)})`;
             document.getElementById('sellModalAmount').textContent = `${(netAmount * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${netAmount.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})})`;
-            document.getElementById('sellModalAvgPrice').textContent = `${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${avgPrice.toFixed(2)})`;
+            const avgEl = document.getElementById('sellModalAvgPrice');
+            if (avgEl) avgEl.textContent = `${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${avgPrice.toFixed(2)})`;
+            const feeEl = document.getElementById('sellModalFee');
+            if (feeEl) feeEl.textContent = `${(estCost * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${estCost.toFixed(2)}) / ${totalCostRateLabel}`;
 
             const profitEl = document.getElementById('sellModalProfit');
             if (profitEl) {
                 profitEl.textContent = `${profitSign}${Math.abs(krwProfit).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 (${profitSign}$${Math.abs(profit).toFixed(2)}) / ${profit >= 0 ? '+' : ''}${profitPct.toFixed(2)}%`;
                 profitEl.className = `text-sm font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
             }
-
-            document.getElementById('sellModalPnl').innerHTML = `
-                <div class="flex justify-between">
-                    <span class="text-xs text-slate-400">평균 매수가</span>
-                    <span id="sellModalAvgPrice2" class="text-sm font-semibold text-white">${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${avgPrice.toFixed(2)})</span>
-                </div>
-                <div class="flex justify-between">
-                    <span class="text-xs text-slate-400">예상 수수료</span>
-                    <span class="text-sm font-semibold text-slate-300">${(estCost * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${estCost.toFixed(2)}) / ${totalCostRateLabel}</span>
-                </div>
-                <div class="flex justify-between">
-                    <span class="text-xs text-slate-400">예상 손익</span>
-                    <span class="text-sm font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${profitSign}${Math.abs(krwProfit).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 (${profitSign}$${Math.abs(profit).toFixed(2)}) / ${profit >= 0 ? '+' : ''}${profitPct.toFixed(2)}%</span>
-                </div>`;
         }
 
         function confirmSell(symbol, percent, totalQty) {
@@ -1918,6 +1912,7 @@
                 </div>
                 <div id="sellModalPnl" class="bg-slate-900/60 rounded-xl p-4 space-y-2.5">
                     <div class="flex justify-between"><span class="text-xs text-slate-400">평균 매수가</span><span id="sellModalAvgPrice" class="text-sm font-semibold text-white"></span></div>
+                    <div class="flex justify-between"><span class="text-xs text-slate-400">예상 수수료</span><span id="sellModalFee" class="text-sm font-semibold text-slate-300"></span></div>
                     <div class="flex justify-between"><span class="text-xs text-slate-400">예상 손익</span><span id="sellModalProfit" class="text-sm font-bold"></span></div>
                 </div>
             </div>
