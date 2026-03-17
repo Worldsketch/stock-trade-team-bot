@@ -1,4 +1,4 @@
-const CACHE_NAME = 'stb-v1';
+const CACHE_NAME = 'stb-v2';
 const ASSETS = ['/', '/static/manifest.json'];
 
 self.addEventListener('install', e => {

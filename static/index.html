@@ -271,7 +271,7 @@
                     <span id="aiReportTime" class="text-[10px] text-slate-500"></span>
                 </div>
                 <div id="aiReportContainer" class="p-5">
-                    <p class="text-center text-slate-500 py-6 text-sm">리포트가 없습니다. 매일 오전 10시, 오후 11시 30분에 자동 생성됩니다.</p>
+                    <p class="text-center text-slate-500 py-6 text-sm">리포트가 없습니다. 매일 프리장 시작(ET 04:00)과 본장 시작(ET 09:30)에 자동 생성됩니다.</p>
                 </div>
                 <div class="px-5 pb-3">
                     <p class="text-[10px] text-slate-600 text-right">* AI 분석은 기술적 지표 기반 참고자료이며, 투자 조언이 아닙니다.</p>
@@ -1002,7 +1002,14 @@
                 sessionStorage.setItem('bot_auth_token', token);
                 document.getElementById('loginModal').classList.add('hidden');
                 const data = await res.json();
-                if (!data.error) { lastData = data; updateUI(data); }
+                if (!data.error) {
+                    lastData = data;
+                    updateUI(data);
+                    if (!_aiReportHydrated) {
+                        await fetchAiReport();
+                        _aiReportHydrated = true;
+                    }
+                }
             } catch(err) {
                 errEl.textContent = '서버 연결 실패';
                 errEl.classList.remove('hidden');
@@ -1152,11 +1159,20 @@
             _statusFetchInFlight = true;
             try {
                 const res = await fetch('/api/status', { headers: { 'Authorization': auth } });
-                if (res.status === 401) { clearAuthHeader(); showLogin(); return null; }
+                if (res.status === 401) {
+                    clearAuthHeader();
+                    _aiReportHydrated = false;
+                    showLogin();
+                    return null;
+                }
                 const data = await res.json();
                 if (data.error) return false;
                 lastData = data;
                 updateUI(data);
+                if (!_aiReportHydrated) {
+                    await fetchAiReport();
+                    _aiReportHydrated = true;
+                }
                 return true;
             } catch (err) {
                 console.error("Fetch error:", err);
@@ -2071,6 +2087,7 @@
         }
 
         let _strategyFetchSeq = 0;
+        let _aiReportHydrated = false;
 
         async function fetchStrategyParams() {
             const auth = getAuthHeader();
