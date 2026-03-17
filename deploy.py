@@ -98,11 +98,15 @@ def schedule_restart(schedule: str, tz_name: str) -> None:
 
     remote_path = shlex.quote(DEPLOY_PATH)
     remote_log = shlex.quote(f"{DEPLOY_PATH}/deploy_scheduled_restart.log")
+    remote_pid = shlex.quote(f"{DEPLOY_PATH}/deploy_scheduled_restart.pid")
     remote_script = (
-        f"LOG={remote_log}; "
+        f"LOG={remote_log}; PID={remote_pid}; "
+        f"if [ -f \"$PID\" ]; then OLD_PID=$(cat \"$PID\" 2>/dev/null || true); "
+        f"if [ -n \"$OLD_PID\" ] && kill -0 \"$OLD_PID\" 2>/dev/null; then kill \"$OLD_PID\" 2>/dev/null || true; fi; fi; "
         f"(sleep {delay_sec}; cd {remote_path} && "
         f"pm2 restart trade-bot >> \"$LOG\" 2>&1 && "
-        f"pm2 status trade-bot >> \"$LOG\" 2>&1) >/dev/null 2>&1 &"
+        f"pm2 status trade-bot >> \"$LOG\" 2>&1) >/dev/null 2>&1 & "
+        f"echo $! > \"$PID\""
     )
     run(f"ssh -o ConnectTimeout=10 {TARGET} {shlex.quote(remote_script)}")
     print(
@@ -110,6 +114,7 @@ def schedule_restart(schedule: str, tz_name: str) -> None:
         f"(약 {delay_sec}초 후)"
     )
     print(f"📄 서버 로그: {DEPLOY_PATH}/deploy_scheduled_restart.log")
+    print(f"🧭 예약 PID 파일: {DEPLOY_PATH}/deploy_scheduled_restart.pid")
 
 
 def parse_args() -> argparse.Namespace:
