@@ -582,6 +582,7 @@ class TradingBot:
             }
 
         buy_qty: int = 1
+        min_qty_override: bool = False
         buy_price: float = round(current_price * (1.0 + SMART_BUY_INITIAL_PREMIUM), 2)
         if buy_percent > 0:
             try:
@@ -591,13 +592,17 @@ class TradingBot:
                 buy_amount: float = available_cash * (buy_percent / 100.0)
                 buy_qty = int(buy_amount / buy_price)
                 if buy_qty < 1:
-                    return {
-                        "success": False,
-                        "message": (
-                            f"{symbol} 매수 금액(${buy_amount:.0f}, 예수금 ${available_cash:,.2f}의 {buy_percent:.1f}%)이 "
-                            f"주문가(${buy_price:.2f})보다 적습니다."
-                        ),
-                    }
+                    if available_cash >= buy_price:
+                        buy_qty = 1
+                        min_qty_override = True
+                    else:
+                        return {
+                            "success": False,
+                            "message": (
+                                f"{symbol} 매수 금액(${buy_amount:.0f}, 예수금 ${available_cash:,.2f}의 {buy_percent:.1f}%)이 "
+                                f"주문가(${buy_price:.2f})보다 적고, 1주 매수 예수금도 부족합니다."
+                            ),
+                        }
             except Exception as e:
                 return {"success": False, "message": f"매수 수량 계산 실패: {e}"}
         prefer_daytime: bool = is_daytime_session and (not is_us_session)
@@ -606,6 +611,8 @@ class TradingBot:
             return {"success": False, "message": f"{symbol} {buy_qty}주 매수 주문 실패"}
 
         pct_label: str = f" ({buy_percent}%)" if buy_percent > 0 else ""
+        if min_qty_override:
+            pct_label = f" ({buy_percent}%, 최소 1주)"
         self._start_smart_buy_manager(
             symbol=symbol,
             total_qty=buy_qty,

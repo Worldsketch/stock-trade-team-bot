@@ -558,6 +558,7 @@
         let _slotsReorderInFlight = false;
         let _pendingSlotReorderSymbols = null;
         let _preferredSlotOrderSymbols = [];
+        let _sellModalContext = null;
         const POLL_STATUS_NORMAL_MS = 2500;
         const POLL_STATUS_RISK_MS = 6000;
         const POLL_STATUS_IDLE_MS = 15000;
@@ -1672,6 +1673,8 @@
                 document.getElementById('portfolioSummary').style.display = 'none';
             }
 
+            renderSellModalLive();
+            refreshAddSlotLiveQuoteFromStatus(data);
             updateChartRealtime(data.positions);
 
             if (data.logs) {
@@ -1740,9 +1743,68 @@
             return { open: false, reason: '장 마감 시간' };
         }
 
+        function isSellModalOpen() {
+            const modal = document.getElementById('sellModal');
+            return !!(modal && !modal.classList.contains('hidden'));
+        }
+
+        function renderSellModalLive() {
+            if (!isSellModalOpen() || !_sellModalContext) return;
+            const { symbol, sellQty } = _sellModalContext;
+            const pos = lastData?.positions?.find(p => p.symbol === symbol);
+            if (!pos || sellQty <= 0) return;
+
+            const curPrice = Number(pos.current_price || 0);
+            const avgPrice = Number(pos.avg_price || 0);
+            const rate = Number(lastData?.exchange_rate || 1400);
+            const sellPrice = Math.round((curPrice * (1 - SMART_SELL_INITIAL_DISCOUNT)) * 100) / 100;
+            const estAmount = sellQty * sellPrice;
+            const feeRate = Number(lastData?.sell_fee_rate ?? 0.0025);
+            const taxRate = Number(lastData?.sell_tax_rate ?? 0);
+            const totalCostRate = Math.max(0, feeRate + taxRate);
+            const estCost = estAmount * totalCostRate;
+            const netAmount = estAmount - estCost;
+            const grossProfit = avgPrice > 0 ? (sellPrice - avgPrice) * sellQty : 0;
+            const profit = grossProfit - estCost;
+            const costBasis = avgPrice > 0 ? (avgPrice * sellQty) : 0;
+            const profitPct = costBasis > 0 ? (profit / costBasis * 100) : 0;
+            const totalCostRateLabel = `${Number((totalCostRate * 100).toFixed(3)).toString()}%`;
+            const profitSign = profit >= 0 ? '+' : '-';
+            const krwProfit = profit * rate;
+
+            const market = isMarketTradable();
+            if (market.open) {
+                document.querySelector('#sellModalHeader p').textContent = `매도 주문 확인 · ${market.session} · ${market.desc}`;
+            }
+            document.getElementById('sellModalPrice').textContent = `${(sellPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${sellPrice.toFixed(2)})`;
+            document.getElementById('sellModalAmount').textContent = `${(netAmount * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${netAmount.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})})`;
+            document.getElementById('sellModalAvgPrice').textContent = `${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${avgPrice.toFixed(2)})`;
+
+            const profitEl = document.getElementById('sellModalProfit');
+            if (profitEl) {
+                profitEl.textContent = `${profitSign}${Math.abs(krwProfit).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 (${profitSign}$${Math.abs(profit).toFixed(2)}) / ${profit >= 0 ? '+' : ''}${profitPct.toFixed(2)}%`;
+                profitEl.className = `text-sm font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+            }
+
+            document.getElementById('sellModalPnl').innerHTML = `
+                <div class="flex justify-between">
+                    <span class="text-xs text-slate-400">평균 매수가</span>
+                    <span id="sellModalAvgPrice2" class="text-sm font-semibold text-white">${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${avgPrice.toFixed(2)})</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-xs text-slate-400">예상 수수료</span>
+                    <span class="text-sm font-semibold text-slate-300">${(estCost * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${estCost.toFixed(2)}) / ${totalCostRateLabel}</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-xs text-slate-400">예상 손익</span>
+                    <span class="text-sm font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${profitSign}${Math.abs(krwProfit).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 (${profitSign}$${Math.abs(profit).toFixed(2)}) / ${profit >= 0 ? '+' : ''}${profitPct.toFixed(2)}%</span>
+                </div>`;
+        }
+
         function confirmSell(symbol, percent, totalQty) {
             const market = isMarketTradable();
             if (!market.open) {
+                _sellModalContext = null;
                 const modal = document.getElementById('sellModal');
                 const inner = modal.querySelector('.bg-slate-800');
                 const now = new Date();
@@ -1772,23 +1834,7 @@
             }
 
             const sellQty = percent === 100 ? totalQty : Math.max(1, Math.floor(totalQty * percent / 100));
-            const pos = lastData?.positions?.find(p => p.symbol === symbol);
-            const curPrice = pos?.current_price || 0;
-            const avgPrice = pos?.avg_price || 0;
-            const rate = lastData?.exchange_rate || 1400;
-            const sellPrice = Math.round((curPrice * (1 - SMART_SELL_INITIAL_DISCOUNT)) * 100) / 100;
-            const estAmount = sellQty * sellPrice;
-            const feeRate = Number(lastData?.sell_fee_rate ?? 0.0025);
-            const taxRate = Number(lastData?.sell_tax_rate ?? 0);
-            const totalCostRate = Math.max(0, feeRate + taxRate);
-            const estCost = estAmount * totalCostRate;
-            const netAmount = estAmount - estCost;
-            const grossProfit = avgPrice > 0 ? (sellPrice - avgPrice) * sellQty : 0;
-            const profit = grossProfit - estCost;
-            const costBasis = avgPrice > 0 ? (avgPrice * sellQty) : 0;
-            const profitPct = costBasis > 0 ? (profit / costBasis * 100) : 0;
-            const formatPct = (value) => `${Number((value * 100).toFixed(3)).toString()}%`;
-            const totalCostRateLabel = formatPct(totalCostRate);
+            _sellModalContext = { symbol, percent, totalQty, sellQty };
 
             const badge = document.getElementById('sellModalBadge');
             const sellSc = getSlotColor(symbol);
@@ -1798,30 +1844,7 @@
             document.getElementById('sellModalTitle').textContent = symbol;
             document.getElementById('sellModalPercent').textContent = `${percent}%`;
             document.getElementById('sellModalQty').textContent = `${sellQty}주 / ${totalQty}주`;
-            document.getElementById('sellModalPrice').textContent = `${(sellPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${sellPrice.toFixed(2)})`;
-            document.getElementById('sellModalAmount').textContent = `${(netAmount * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${netAmount.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})})`;
-            document.getElementById('sellModalAvgPrice').textContent = `${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${avgPrice.toFixed(2)})`;
-
-            const profitEl = document.getElementById('sellModalProfit');
-            const profitSign = profit >= 0 ? '+' : '-';
-            const krwProfit = profit * rate;
-            profitEl.textContent = `${profitSign}${Math.abs(krwProfit).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 (${profitSign}$${Math.abs(profit).toFixed(2)}) / ${profit >= 0 ? '+' : ''}${profitPct.toFixed(2)}%`;
-            profitEl.className = `text-sm font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
-
             document.querySelector('#sellModalHeader p').textContent = `매도 주문 확인 · ${market.session} · ${market.desc}`;
-            document.getElementById('sellModalPnl').innerHTML = `
-                <div class="flex justify-between">
-                    <span class="text-xs text-slate-400">평균 매수가</span>
-                    <span id="sellModalAvgPrice2" class="text-sm font-semibold text-white">${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${avgPrice.toFixed(2)})</span>
-                </div>
-                <div class="flex justify-between">
-                    <span class="text-xs text-slate-400">예상 수수료</span>
-                    <span class="text-sm font-semibold text-slate-300">${(estCost * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${estCost.toFixed(2)}) / ${totalCostRateLabel}</span>
-                </div>
-                <div class="flex justify-between">
-                    <span class="text-xs text-slate-400">예상 손익</span>
-                    <span class="text-sm font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${profitSign}${Math.abs(krwProfit).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 (${profitSign}$${Math.abs(profit).toFixed(2)}) / ${profit >= 0 ? '+' : ''}${profitPct.toFixed(2)}%</span>
-                </div>`;
 
             const confirmBtn = document.getElementById('sellModalConfirmBtn');
             confirmBtn.textContent = '매도 실행';
@@ -1829,6 +1852,7 @@
             confirmBtn.onclick = () => { closeSellModal(); executeSell(symbol, percent); };
 
             document.getElementById('sellModal').classList.remove('hidden');
+            renderSellModalLive();
         }
 
         const _sellModalOriginal = `
@@ -1862,6 +1886,7 @@
             const modal = document.getElementById('sellModal');
             modal.classList.add('hidden');
             modal.querySelector('.bg-slate-800').innerHTML = _sellModalOriginal;
+            _sellModalContext = null;
         }
 
         async function executeSell(symbol, percent) {
@@ -2361,6 +2386,36 @@
         }
         function closeAddSlotModal() {
             document.getElementById('addSlotModal').classList.add('hidden');
+            window._addSlotSymbol = '';
+            window._addSlotPrice = 0;
+            _selectedBuyPercent = 0;
+        }
+        function isAddSlotModalOpen() {
+            const modal = document.getElementById('addSlotModal');
+            return !!(modal && !modal.classList.contains('hidden'));
+        }
+
+        function refreshAddSlotLiveQuoteFromStatus(data = lastData) {
+            if (!isAddSlotModalOpen()) return;
+            const resultDiv = document.getElementById('tickerSearchResult');
+            if (!resultDiv || resultDiv.classList.contains('hidden')) return;
+            const symbol = sanitizeSymbol(window._addSlotSymbol || '');
+            if (!symbol) return;
+            const priceEl = document.getElementById('addSlotLivePrice');
+            if (!priceEl) return;
+            const positions = Array.isArray(data?.positions) ? data.positions : [];
+            const pos = positions.find((p) => sanitizeSymbol(p?.symbol || '') === symbol);
+            const livePrice = Number(pos?.current_price || 0);
+            if (livePrice <= 0) return;
+
+            const prevPrice = Number(window._addSlotPrice || 0);
+            if (Math.abs(prevPrice - livePrice) < 0.005) return;
+            window._addSlotPrice = livePrice;
+            priceEl.textContent = `$${livePrice.toFixed(2)}`;
+
+            if (_selectedBuyPercent > 0) {
+                selectBuyPercent(_selectedBuyPercent);
+            }
         }
         let _acTimer = null;
         let _acAbort = null;
@@ -2516,7 +2571,7 @@
                                 <p class="text-xs text-slate-400">${safeName}</p>
                             </div>
                             <div class="text-right">
-                                <p class="text-white font-bold">$${price.toFixed(2)}</p>
+                                <p id="addSlotLivePrice" class="text-white font-bold">$${price.toFixed(2)}</p>
                                 ${tradeStatus}
                             </div>
                         </div>
@@ -2546,6 +2601,7 @@
                             <i class="fa-solid fa-ban mr-1.5"></i>${escapeHtml(statusMsg)}
                         </button>`}
                     </div>`;
+                refreshAddSlotLiveQuoteFromStatus();
             } catch(e) {
                 resultDiv.innerHTML = '<div class="bg-rose-500/10 rounded-xl p-4 text-center"><p class="text-sm text-rose-400">검색 요청 실패</p></div>';
             }
@@ -2568,19 +2624,23 @@
             const rate = lastData?.exchange_rate || 1400;
             const cashUsd = Math.max(0, Number(lastData?.usd_balance || 0));
             const estAmount = cashUsd * (pct / 100);
-            const estQty = price > 0 ? Math.floor(estAmount / price) : 0;
+            const rawQty = price > 0 ? Math.floor(estAmount / price) : 0;
+            const minQtyOverride = (rawQty < 1 && price > 0 && cashUsd >= price);
+            const estQty = minQtyOverride ? 1 : rawQty;
             const estDiv = document.getElementById('buyEstimate');
             const estText = document.getElementById('buyEstimateText');
             if (estDiv && estText) {
                 estDiv.classList.remove('hidden');
                 const amtDisplay = showKrw ? `${Math.round(estAmount * rate).toLocaleString()}원` : `$${estAmount.toLocaleString('en-US', {maximumFractionDigits:0})}`;
-                estText.textContent = `${estQty}주 · ${amtDisplay}`;
+                estText.textContent = minQtyOverride ? `1주(최소) · ${amtDisplay}` : `${estQty}주 · ${amtDisplay}`;
             }
             const confirmBtn = document.getElementById('addSlotConfirmBtn');
             if (confirmBtn) {
                 confirmBtn.disabled = false;
                 confirmBtn.className = 'w-full font-bold py-3 rounded-xl transition-colors bg-emerald-600 hover:bg-emerald-500 text-white';
-                confirmBtn.innerHTML = `<i class="fa-solid fa-cart-plus mr-1.5"></i>${pct}% 매수 (${estQty}주)`;
+                confirmBtn.innerHTML = minQtyOverride
+                    ? `<i class="fa-solid fa-cart-plus mr-1.5"></i>${pct}% 매수 (최소 1주)`
+                    : `<i class="fa-solid fa-cart-plus mr-1.5"></i>${pct}% 매수 (${estQty}주)`;
             }
         }
 
