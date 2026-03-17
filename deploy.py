@@ -101,6 +101,8 @@ def schedule_restart(schedule: str, tz_name: str) -> None:
     remote_pid = shlex.quote(f"{DEPLOY_PATH}/deploy_scheduled_restart.pid")
     remote_script = (
         f"LOG={remote_log}; PID={remote_pid}; "
+        "for P in $(ps -eo pid,args | awk '/deploy_scheduled_restart\\.log/ && /\\(sleep/ {print $1}'); do "
+        "pkill -P \"$P\" 2>/dev/null || true; kill \"$P\" 2>/dev/null || true; done; "
         f"if [ -f \"$PID\" ]; then OLD_PID=$(cat \"$PID\" 2>/dev/null || true); "
         f"if [ -n \"$OLD_PID\" ] && kill -0 \"$OLD_PID\" 2>/dev/null; then kill \"$OLD_PID\" 2>/dev/null || true; fi; fi; "
         f"(sleep {delay_sec}; cd {remote_path} && "
