@@ -78,6 +78,32 @@ def create_status_router(
                 existing_symbols = {str(p.get("symbol", "")).upper() for p in positions_list if p.get("symbol")}
                 quote_refresh_budget: int = 1
 
+                for position in positions_list:
+                    symbol = str(position.get("symbol", "")).upper()
+                    if not symbol:
+                        continue
+                    slot_info = slot_map.get(symbol, {})
+                    position["watch_only"] = bool(slot_info.get("watch_only", position.get("watch_only", False)))
+                    position["anchor_price"] = float(slot_info.get("anchor_price", position.get("anchor_price", 0.0)) or 0.0)
+                    position["anchor_at"] = str(slot_info.get("anchor_at", position.get("anchor_at", "")))
+                    current_price = float(position.get("current_price", 0.0) or 0.0)
+                    if current_price > 0:
+                        _set_cached_slot_price(symbol, current_price, now)
+                        continue
+                    cached_price = _get_cached_slot_price(symbol, now)
+                    if cached_price > 0:
+                        position["current_price"] = cached_price
+                        continue
+                    if quote_refresh_budget > 0:
+                        quote_refresh_budget -= 1
+                        try:
+                            fresh_price = float(bot.api.get_current_price(symbol, prefer_daytime=is_daytime_session) or 0.0)
+                            if fresh_price > 0:
+                                _set_cached_slot_price(symbol, fresh_price, now)
+                                position["current_price"] = fresh_price
+                        except Exception:
+                            pass
+
                 for slot in active_slots:
                     symbol = str(slot.get("symbol", "")).upper()
                     if not symbol or symbol in existing_symbols:
