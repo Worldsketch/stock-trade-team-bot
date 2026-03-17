@@ -35,6 +35,7 @@ def create_status_router(
     router = APIRouter()
     slot_price_cache: Dict[str, Dict[str, float]] = {}
     slot_price_ttl_sec: float = 5.0
+    quote_rr_state: Dict[str, int] = {"idx": 0}
 
     def _get_cached_slot_price(symbol: str, now_ts: float) -> float:
         cached = slot_price_cache.get(symbol)
@@ -51,6 +52,14 @@ def create_status_router(
         if len(slot_price_cache) > 64:
             oldest_symbol = min(slot_price_cache.keys(), key=lambda s: slot_price_cache[s].get("ts", 0.0))
             slot_price_cache.pop(oldest_symbol, None)
+
+    def _pick_round_robin_symbol(candidates: list) -> str:
+        if not candidates:
+            return ""
+        idx = int(quote_rr_state.get("idx", 0))
+        picked = candidates[idx % len(candidates)]
+        quote_rr_state["idx"] = idx + 1
+        return str(picked)
 
     @router.get("/api/status")
     def get_status(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
@@ -94,15 +103,6 @@ def create_status_router(
                     if cached_price > 0:
                         position["current_price"] = cached_price
                         continue
-                    if quote_refresh_budget > 0:
-                        quote_refresh_budget -= 1
-                        try:
-                            fresh_price = float(bot.api.get_current_price(symbol, prefer_daytime=is_daytime_session) or 0.0)
-                            if fresh_price > 0:
-                                _set_cached_slot_price(symbol, fresh_price, now)
-                                position["current_price"] = fresh_price
-                        except Exception:
-                            pass
 
                 for slot in active_slots:
                     symbol = str(slot.get("symbol", "")).upper()
@@ -131,6 +131,27 @@ def create_status_router(
                             "base_price": 0.0,
                         }
                     )
+
+                if quote_refresh_budget > 0:
+                    refresh_candidates = [
+                        str(p.get("symbol", "")).upper()
+                        for p in positions_list
+                        if float(p.get("current_price", 0.0) or 0.0) <= 0.0 and p.get("symbol")
+                    ]
+                    target_symbol = _pick_round_robin_symbol(refresh_candidates)
+                    if target_symbol:
+                        try:
+                            fresh_price = float(
+                                bot.api.get_current_price(target_symbol, prefer_daytime=is_daytime_session) or 0.0
+                            )
+                            if fresh_price > 0:
+                                _set_cached_slot_price(target_symbol, fresh_price, now)
+                                for p in positions_list:
+                                    if str(p.get("symbol", "")).upper() == target_symbol:
+                                        p["current_price"] = fresh_price
+                                        break
+                        except Exception:
+                            pass
 
                 slot_order: Dict[str, int] = {str(slot.get("symbol", "")).upper(): idx for idx, slot in enumerate(active_slots)}
                 positions_list.sort(key=lambda position: slot_order.get(str(position.get("symbol", "")).upper(), 999))
@@ -222,13 +243,6 @@ def create_status_router(
                     cached_price = _get_cached_slot_price(symbol, now)
                     if cached_price > 0:
                         current_price = cached_price
-                    elif quote_refresh_budget > 0:
-                        quote_refresh_budget -= 1
-                        try:
-                            current_price = float(bot.api.get_current_price(symbol, prefer_daytime=is_daytime_session) or 0.0)
-                            _set_cached_slot_price(symbol, current_price, now)
-                        except Exception:
-                            pass
                 slot_info = slot_map.get(symbol, {})
                 base_symbol: str = slot_info.get("base_asset", symbol)
                 positions_list.append(
@@ -256,13 +270,6 @@ def create_status_router(
                     continue
                 slot_info = slot_map.get(symbol, {})
                 fallback_price: float = _get_cached_slot_price(symbol, now)
-                if fallback_price <= 0 and quote_refresh_budget > 0:
-                    quote_refresh_budget -= 1
-                    try:
-                        fallback_price = float(bot.api.get_current_price(symbol, prefer_daytime=is_daytime_session) or 0.0)
-                        _set_cached_slot_price(symbol, fallback_price, now)
-                    except Exception:
-                        pass
                 base_symbol = slot_info.get("base_asset", symbol)
                 positions_list.append(
                     {
@@ -279,6 +286,25 @@ def create_status_router(
                         "base_price": 0.0,
                     }
                 )
+
+            if quote_refresh_budget > 0:
+                refresh_candidates = [
+                    str(p.get("symbol", "")).upper()
+                    for p in positions_list
+                    if float(p.get("current_price", 0.0) or 0.0) <= 0.0 and p.get("symbol")
+                ]
+                target_symbol = _pick_round_robin_symbol(refresh_candidates)
+                if target_symbol:
+                    try:
+                        fresh_price = float(bot.api.get_current_price(target_symbol, prefer_daytime=is_daytime_session) or 0.0)
+                        if fresh_price > 0:
+                            _set_cached_slot_price(target_symbol, fresh_price, now)
+                            for p in positions_list:
+                                if str(p.get("symbol", "")).upper() == target_symbol:
+                                    p["current_price"] = fresh_price
+                                    break
+                    except Exception:
+                        pass
 
             slot_order: Dict[str, int] = {slot["symbol"]: idx for idx, slot in enumerate(active_slots)}
             positions_list.sort(key=lambda position: slot_order.get(position["symbol"], 999))

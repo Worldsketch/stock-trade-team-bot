@@ -1219,19 +1219,52 @@
             { glow: 'glow-cyan', border: 'border-cyan-500/30', bg: 'bg-cyan-600', text: 'text-cyan-400' },
         ];
 
-        const SYMBOL_COLOR_MAP = {
-            'NVDL': 0, 'TSLL': 1, 'TQQQ': 2,
-            'SOXL': 3, 'UPRO': 4, 'TECL': 5,
+        // 고정 3종 + 추가 슬롯 우선순위(노랑→보라→시안)
+        const FIXED_SYMBOL_COLOR_MAP = {
+            'NVDL': 0, // green
+            'TSLL': 1, // red
+            'TQQQ': 2, // blue
         };
+        const ADDED_SLOT_COLOR_PRIORITY = [4, 3, 5, 0, 1, 2]; // amber, purple, cyan, ...
+
+        function buildSlotColorMap() {
+            const map = {};
+            const used = new Set();
+            const symbols = Array.isArray(currentSlots)
+                ? currentSlots.map((s) => sanitizeSymbol(s?.symbol || '')).filter(Boolean)
+                : [];
+
+            // 1) 고정 심볼 우선 배정
+            symbols.forEach((sym) => {
+                const fixedIdx = FIXED_SYMBOL_COLOR_MAP[sym];
+                if (fixedIdx === undefined || used.has(fixedIdx)) return;
+                map[sym] = fixedIdx;
+                used.add(fixedIdx);
+            });
+
+            // 2) 나머지 슬롯은 우선순위(노랑→보라→시안)로 빈 색상 배정
+            symbols.forEach((sym) => {
+                if (map[sym] !== undefined) return;
+                let picked = ADDED_SLOT_COLOR_PRIORITY.find((idx) => !used.has(idx));
+                if (picked === undefined) picked = SLOT_COLORS.findIndex((_, idx) => !used.has(idx));
+                if (picked === undefined || picked < 0) {
+                    picked = (Object.keys(map).length) % SLOT_COLORS.length;
+                }
+                map[sym] = picked;
+                used.add(picked);
+            });
+            return map;
+        }
+
         function getSlotColor(symbol) {
-            if (symbol in SYMBOL_COLOR_MAP) return SLOT_COLORS[SYMBOL_COLOR_MAP[symbol]];
-            const idx = currentSlots.findIndex(s => s.symbol === symbol);
-            const usedIndices = new Set(currentSlots.map(s => SYMBOL_COLOR_MAP[s.symbol]).filter(i => i !== undefined));
-            let colorIdx = 0;
-            for (let i = 0; i < SLOT_COLORS.length; i++) {
-                if (!usedIndices.has(i)) { colorIdx = i; break; }
-            }
-            return SLOT_COLORS[idx >= 0 ? (colorIdx + idx) % SLOT_COLORS.length : 0];
+            const sym = sanitizeSymbol(symbol || '');
+            if (!sym) return SLOT_COLORS[0];
+            const map = buildSlotColorMap();
+            const idx = map[sym];
+            if (idx !== undefined) return SLOT_COLORS[idx];
+            const fixedIdx = FIXED_SYMBOL_COLOR_MAP[sym];
+            if (fixedIdx !== undefined) return SLOT_COLORS[fixedIdx];
+            return SLOT_COLORS[0];
         }
 
         function getAbbr(symbol) { return symbol.slice(0, 2).toUpperCase(); }
