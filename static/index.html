@@ -1787,7 +1787,8 @@
             const profit = grossProfit - estCost;
             const costBasis = avgPrice > 0 ? (avgPrice * sellQty) : 0;
             const profitPct = costBasis > 0 ? (profit / costBasis * 100) : 0;
-            const feeLabel = `수수료 ${(feeRate * 100).toFixed(3)}%` + (taxRate > 0 ? ` + 제세금 ${(taxRate * 100).toFixed(3)}%` : '');
+            const formatPct = (value) => `${Number((value * 100).toFixed(3)).toString()}%`;
+            const totalCostRateLabel = formatPct(totalCostRate);
 
             const badge = document.getElementById('sellModalBadge');
             const sellSc = getSlotColor(symbol);
@@ -1797,29 +1798,29 @@
             document.getElementById('sellModalTitle').textContent = symbol;
             document.getElementById('sellModalPercent').textContent = `${percent}%`;
             document.getElementById('sellModalQty').textContent = `${sellQty}주 / ${totalQty}주`;
-            document.getElementById('sellModalPrice').textContent = `$${sellPrice.toFixed(2)} (${(sellPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원)`;
-            document.getElementById('sellModalAmount').textContent = `$${netAmount.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${(netAmount * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원)`;
-            document.getElementById('sellModalAvgPrice').textContent = `$${avgPrice.toFixed(2)} (${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원)`;
+            document.getElementById('sellModalPrice').textContent = `${(sellPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${sellPrice.toFixed(2)})`;
+            document.getElementById('sellModalAmount').textContent = `${(netAmount * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${netAmount.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})})`;
+            document.getElementById('sellModalAvgPrice').textContent = `${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${avgPrice.toFixed(2)})`;
 
             const profitEl = document.getElementById('sellModalProfit');
             const profitSign = profit >= 0 ? '+' : '-';
             const krwProfit = profit * rate;
-            profitEl.textContent = `${profitSign}$${Math.abs(profit).toFixed(2)} (${profitSign}${Math.abs(krwProfit).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원) / ${profit >= 0 ? '+' : ''}${profitPct.toFixed(2)}%`;
+            profitEl.textContent = `${profitSign}${Math.abs(krwProfit).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 (${profitSign}$${Math.abs(profit).toFixed(2)}) / ${profit >= 0 ? '+' : ''}${profitPct.toFixed(2)}%`;
             profitEl.className = `text-sm font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
 
             document.querySelector('#sellModalHeader p').textContent = `매도 주문 확인 · ${market.session} · ${market.desc}`;
             document.getElementById('sellModalPnl').innerHTML = `
                 <div class="flex justify-between">
                     <span class="text-xs text-slate-400">평균 매수가</span>
-                    <span id="sellModalAvgPrice2" class="text-sm font-semibold text-white">$${avgPrice.toFixed(2)} (${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원)</span>
+                    <span id="sellModalAvgPrice2" class="text-sm font-semibold text-white">${(avgPrice * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${avgPrice.toFixed(2)})</span>
                 </div>
                 <div class="flex justify-between">
-                    <span class="text-xs text-slate-400">예상 수수료/제비용 (${feeLabel})</span>
-                    <span class="text-sm font-semibold text-slate-300">$${estCost.toFixed(2)} (${(estCost * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원) / ${(totalCostRate * 100).toFixed(3)}%</span>
+                    <span class="text-xs text-slate-400">예상 수수료</span>
+                    <span class="text-sm font-semibold text-slate-300">${(estCost * rate).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 ($${estCost.toFixed(2)}) / ${totalCostRateLabel}</span>
                 </div>
                 <div class="flex justify-between">
                     <span class="text-xs text-slate-400">예상 손익</span>
-                    <span class="text-sm font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${profitSign}$${Math.abs(profit).toFixed(2)} (${profitSign}${Math.abs(krwProfit).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원) / ${profit >= 0 ? '+' : ''}${profitPct.toFixed(2)}%</span>
+                    <span class="text-sm font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${profitSign}${Math.abs(krwProfit).toLocaleString('ko-KR', {maximumFractionDigits: 0})}원 (${profitSign}$${Math.abs(profit).toFixed(2)}) / ${profit >= 0 ? '+' : ''}${profitPct.toFixed(2)}%</span>
                 </div>`;
 
             const confirmBtn = document.getElementById('sellModalConfirmBtn');
