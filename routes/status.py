@@ -117,24 +117,26 @@ def create_status_router(
                 status_cache["ts"] = now
                 return result
 
-            item_code: str = bot.symbols[0] if bot.symbols else "AAPL"
+            active_slots = bot.slot_manager.get_active_slots()
+            all_slot_symbols: list = [str(slot.get("symbol", "")).upper() for slot in active_slots if slot.get("symbol")]
+            trading_symbols: list = list(bot.symbols)
+            seed_symbols: list = trading_symbols if trading_symbols else all_slot_symbols
+            item_code: str = seed_symbols[0] if seed_symbols else "AAPL"
             data: Optional[Dict[str, Any]] = None
             if live_data_cache:
                 data = live_data_cache.get_portfolio(ttl_sec=2.0)
             if not data:
-                data = bot.api.get_balance_and_positions(item_cd=item_code, symbols=bot.symbols)
+                data = bot.api.get_balance_and_positions(item_cd=item_code, symbols=seed_symbols)
                 if live_data_cache:
                     live_data_cache.set_portfolio(data)
             balance_done_at: float = time.perf_counter()
             now_kst = bot.get_korean_time()
             now_et = bot.get_eastern_time()
             is_daytime_session: bool = bot.is_daytime_market_open(now_kst)
-            current_symbols: list = list(bot.symbols)
+            current_symbols: list = list(all_slot_symbols)
             positions_list: list = []
             held_symbols: set = set()
             quote_refresh_budget: int = 1
-
-            active_slots = bot.slot_manager.get_active_slots()
             slot_map: Dict[str, Dict[str, Any]] = {slot.get("symbol"): slot for slot in active_slots}
             sorted_positions = sorted(
                 data.get("positions", []),
@@ -180,6 +182,9 @@ def create_status_router(
                         "pchs_amt": pos.get("pchs_amt", 0.0),
                         "is_leveraged": slot_info.get("is_leveraged", False),
                         "base_asset": base_symbol,
+                        "watch_only": bool(slot_info.get("watch_only", False)),
+                        "anchor_price": float(slot_info.get("anchor_price", 0.0) or 0.0),
+                        "anchor_at": str(slot_info.get("anchor_at", "")),
                         # 본주 차트/실시간 표시를 사용하지 않아 상태 조회에서 별도 본주 시세 조회를 생략
                         "base_price": 0.0,
                     }
@@ -207,6 +212,9 @@ def create_status_router(
                         "return_rate": 0.0,
                         "is_leveraged": slot_info.get("is_leveraged", False),
                         "base_asset": base_symbol,
+                        "watch_only": bool(slot_info.get("watch_only", False)),
+                        "anchor_price": float(slot_info.get("anchor_price", 0.0) or 0.0),
+                        "anchor_at": str(slot_info.get("anchor_at", "")),
                         "base_price": 0.0,
                     }
                 )

@@ -209,7 +209,28 @@ def create_slots_strategy_router(
         if not _is_valid_symbol(symbol):
             return {"success": False, "message": "종목 코드는 영문/숫자/.- 만 허용됩니다. (최대 15자)"}
         buy_percent: float = float(body.get("buy_percent", 0))
-        result: Dict[str, Any] = bot.add_symbol(symbol, buy_percent=buy_percent)
+        watch_only: bool = bool(body.get("watch_only", False))
+        result: Dict[str, Any] = bot.add_symbol(symbol, buy_percent=buy_percent, watch_only=watch_only)
+        if result.get("success"):
+            invalidate_status_cache()
+        return result
+
+    @router.post("/api/slots/buy")
+    async def buy_watch_slot(request: Request, username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+        bot = get_bot()
+        if not bot:
+            return {"success": False, "message": "봇이 초기화되지 않았습니다."}
+        try:
+            body: Dict[str, Any] = await request.json()
+            symbol: str = body.get("symbol", "").strip().upper()
+            buy_percent: float = float(body.get("buy_percent", 1))
+        except Exception:
+            return {"success": False, "message": "잘못된 요청입니다."}
+        if not symbol:
+            return {"success": False, "message": "종목 코드를 입력해주세요."}
+        if not _is_valid_symbol(symbol):
+            return {"success": False, "message": "종목 코드 형식이 올바르지 않습니다."}
+        result: Dict[str, Any] = bot.buy_watch_slot(symbol, buy_percent=buy_percent)
         if result.get("success"):
             invalidate_status_cache()
         return result
@@ -280,7 +301,9 @@ def create_slots_strategy_router(
 
         is_leveraged: bool = query in LEVERAGED_ETF_MAP
         base_asset: str = LEVERAGED_ETF_MAP.get(query, query)
+        slot_info = bot.slot_manager.get_slot(query) or {}
         already_added: bool = bot.slot_manager.has_symbol(query)
+        watch_only: bool = bool(slot_info.get("watch_only", False))
         price: float = 0.0
         tradeable: bool = False
         try:
@@ -299,6 +322,7 @@ def create_slots_strategy_router(
             "base_asset": base_asset,
             "tradeable": tradeable,
             "already_added": already_added,
+            "watch_only": watch_only,
             "currency": "USD",
             "exchange": item.get("exchange", ""),
         }

@@ -73,7 +73,22 @@ class SlotManager:
             if os.path.exists(self.slots_file):
                 with open(self.slots_file, 'r', encoding='utf-8') as f:
                     data: Dict[str, Any] = json.load(f)
-                    self.slots = data.get('slots', [])
+                    loaded_slots = data.get('slots', [])
+                    self.slots = []
+                    for raw in loaded_slots:
+                        if not isinstance(raw, dict):
+                            continue
+                        slot = dict(raw)
+                        symbol = str(slot.get('symbol', '')).upper()
+                        if not symbol:
+                            continue
+                        slot['symbol'] = symbol
+                        slot['base_asset'] = str(slot.get('base_asset', symbol) or symbol).upper()
+                        slot['watch_only'] = bool(slot.get('watch_only', False))
+                        slot['anchor_price'] = float(slot.get('anchor_price', 0.0) or 0.0)
+                        slot['anchor_at'] = str(slot.get('anchor_at', slot.get('added_at', '')) or '')
+                        slot['active'] = bool(slot.get('active', True))
+                        self.slots.append(slot)
                     self.max_slots = data.get('max_slots', 6)
         except Exception as e:
             print(f"[슬롯 로드 오류] {e}")
@@ -88,11 +103,17 @@ class SlotManager:
     def get_active_slots(self) -> List[Dict[str, Any]]:
         return [s for s in self.slots if s.get('active', True)]
 
-    def get_symbols(self) -> List[str]:
-        return [s['symbol'] for s in self.get_active_slots()]
+    def get_symbols(self, include_watch_only: bool = True) -> List[str]:
+        slots = self.get_active_slots()
+        if not include_watch_only:
+            slots = [s for s in slots if not bool(s.get('watch_only', False))]
+        return [s['symbol'] for s in slots]
 
-    def get_base_assets(self) -> Dict[str, str]:
-        return {s['symbol']: s.get('base_asset', s['symbol']) for s in self.get_active_slots()}
+    def get_base_assets(self, include_watch_only: bool = True) -> Dict[str, str]:
+        slots = self.get_active_slots()
+        if not include_watch_only:
+            slots = [s for s in slots if not bool(s.get('watch_only', False))]
+        return {s['symbol']: s.get('base_asset', s['symbol']) for s in slots}
 
     def is_full(self) -> bool:
         return len(self.get_active_slots()) >= self.max_slots
@@ -100,18 +121,53 @@ class SlotManager:
     def has_symbol(self, symbol: str) -> bool:
         return symbol.upper() in self.get_symbols()
 
-    def add_slot(self, symbol: str, base_asset: Optional[str], is_leveraged: bool) -> bool:
+    def add_slot(
+        self,
+        symbol: str,
+        base_asset: Optional[str],
+        is_leveraged: bool,
+        watch_only: bool = False,
+        anchor_price: float = 0.0,
+        anchor_at: str = "",
+    ) -> bool:
         if self.is_full() or self.has_symbol(symbol):
             return False
+        now_iso = datetime.now().isoformat()
         self.slots.append({
             'symbol': symbol.upper(),
             'base_asset': base_asset or symbol.upper(),
-            'added_at': datetime.now().isoformat(),
+            'added_at': now_iso,
+            'anchor_at': anchor_at or now_iso,
+            'anchor_price': float(anchor_price or 0.0),
+            'watch_only': bool(watch_only),
             'is_leveraged': is_leveraged,
             'active': True,
         })
         self._save()
         return True
+
+    def get_slot(self, symbol: str) -> Optional[Dict[str, Any]]:
+        upper = str(symbol or "").upper()
+        for slot in self.get_active_slots():
+            if str(slot.get("symbol", "")).upper() == upper:
+                return slot
+        return None
+
+    def update_slot(self, symbol: str, **updates: Any) -> bool:
+        upper = str(symbol or "").upper()
+        updated = False
+        for idx, slot in enumerate(self.slots):
+            if str(slot.get("symbol", "")).upper() != upper:
+                continue
+            next_slot = dict(slot)
+            for key, value in updates.items():
+                next_slot[key] = value
+            self.slots[idx] = next_slot
+            updated = True
+            break
+        if updated:
+            self._save()
+        return updated
 
     def remove_slot(self, symbol: str) -> bool:
         upper_sym: str = symbol.upper()
@@ -270,11 +326,11 @@ class TradingBot:
 
     @property
     def symbols(self) -> List[str]:
-        return self.slot_manager.get_symbols()
+        return self.slot_manager.get_symbols(include_watch_only=False)
 
     @property
     def base_assets(self) -> Dict[str, str]:
-        return self.slot_manager.get_base_assets()
+        return self.slot_manager.get_base_assets(include_watch_only=False)
 
     def _rebuild_positions_df(self) -> None:
         """슬롯 변경 시 포지션 DataFrame을 재구축합니다."""
@@ -521,8 +577,8 @@ class TradingBot:
         except Exception as e:
             print(f"[자동 등록 오류] {e}")
 
-    def add_symbol(self, symbol: str, buy_percent: float = 0.0) -> Dict[str, Any]:
-        """슬롯에 종목을 추가합니다. buy_percent > 0이면 예수금 대비 해당 비율만큼 매수."""
+    def add_symbol(self, symbol: str, buy_percent: float = 0.0, watch_only: bool = False) -> Dict[str, Any]:
+        """슬롯에 종목을 추가합니다. watch_only=True면 매수 없이 관찰 슬롯으로만 추가합니다."""
         symbol = symbol.upper().strip()
         if not _is_valid_symbol(symbol):
             return {"success": False, "message": "종목 코드는 영문/숫자/.- 만 허용됩니다. (최대 15자)"}
@@ -548,6 +604,26 @@ class TradingBot:
                 return {"success": False, "message": f"{symbol} 현재가 조회 실패 (한투 API에서 거래 불가)"}
         except Exception as e:
             return {"success": False, "message": f"{symbol} 거래소 조회 실패: {e}"}
+
+        if watch_only:
+            ok = self.slot_manager.add_slot(
+                symbol,
+                base_asset,
+                is_leveraged,
+                watch_only=True,
+                anchor_price=current_price,
+                anchor_at=datetime.now().isoformat(),
+            )
+            if not ok:
+                return {"success": False, "message": f"{symbol} 슬롯 추가 실패"}
+            self.log(f"👀 [Watch Only] {symbol} 슬롯 추가 (기준가 ${current_price:.2f})", send_tg=True)
+            return {
+                "success": True,
+                "message": f"{symbol} watch-only 슬롯 추가 완료",
+                "symbol": symbol,
+                "watch_only": True,
+                "anchor_price": current_price,
+            }
 
         already_held: bool = False
         bal_data: Dict[str, Any] = {}
@@ -644,6 +720,89 @@ class TradingBot:
             "symbol": symbol, "name": name,
             "is_leveraged": is_leveraged, "base_asset": base_asset,
             "price": current_price, "quantity": buy_qty,
+            "est_amount": est_amount,
+        }
+
+    def buy_watch_slot(self, symbol: str, buy_percent: float = 1.0) -> Dict[str, Any]:
+        symbol = symbol.upper().strip()
+        if not _is_valid_symbol(symbol):
+            return {"success": False, "message": "종목 코드 형식이 올바르지 않습니다."}
+        if buy_percent <= 0:
+            return {"success": False, "message": "매수 비율은 0보다 커야 합니다."}
+        slot = self.slot_manager.get_slot(symbol)
+        if not slot:
+            return {"success": False, "message": f"{symbol} 슬롯이 없습니다."}
+        if not bool(slot.get("watch_only", False)):
+            return {"success": False, "message": f"{symbol}은 watch-only 슬롯이 아닙니다."}
+
+        now_et: datetime = datetime.now(ZoneInfo("America/New_York"))
+        now_kst: datetime = now_et.astimezone(ZoneInfo("Asia/Seoul"))
+        is_us_session: bool = self.is_active_trading_time(now_et)
+        is_daytime_session: bool = self.is_daytime_market_open(now_kst)
+        if not (is_us_session or is_daytime_session):
+            return {"success": False, "message": "거래 가능 시간에만 매수할 수 있습니다."}
+
+        try:
+            current_price: float = self.api.get_current_price(symbol)
+        except Exception as e:
+            return {"success": False, "message": f"{symbol} 현재가 조회 실패: {e}"}
+        if current_price <= 0:
+            return {"success": False, "message": f"{symbol} 현재가를 가져올 수 없습니다."}
+
+        buy_price: float = round(current_price * (1.0 + SMART_BUY_INITIAL_PREMIUM), 2)
+        try:
+            bal_data: Dict[str, Any] = self.api.get_balance_and_positions(symbols=self.symbols + [symbol])
+            available_cash: float = float(bal_data.get("usd_balance", 0.0) or 0.0)
+            buy_amount: float = available_cash * (buy_percent / 100.0)
+            buy_qty: int = int(buy_amount / buy_price)
+            min_qty_override: bool = False
+            if buy_qty < 1:
+                if available_cash >= buy_price:
+                    buy_qty = 1
+                    min_qty_override = True
+                else:
+                    return {
+                        "success": False,
+                        "message": (
+                            f"{symbol} 매수 금액(${buy_amount:.0f}, 예수금 ${available_cash:,.2f}의 {buy_percent:.1f}%)이 "
+                            f"주문가(${buy_price:.2f})보다 적고, 1주 매수 예수금도 부족합니다."
+                        ),
+                    }
+        except Exception as e:
+            return {"success": False, "message": f"매수 수량 계산 실패: {e}"}
+
+        prefer_daytime: bool = is_daytime_session and (not is_us_session)
+        success: bool = self.api.place_order(symbol, buy_qty, buy_price, is_buy=True, prefer_daytime=prefer_daytime)
+        if not success:
+            return {"success": False, "message": f"{symbol} {buy_qty}주 매수 주문 실패"}
+
+        pct_label: str = f"({buy_percent}%)"
+        if min_qty_override:
+            pct_label = f"({buy_percent}%, 최소 1주)"
+        self._start_smart_buy_manager(
+            symbol=symbol,
+            total_qty=buy_qty,
+            initial_price=buy_price,
+            reason=f"[Watch Only] 매수 전환 {pct_label}",
+            prefer_daytime=prefer_daytime,
+        )
+        self.slot_manager.update_slot(symbol, watch_only=False)
+        self.is_uptrend[symbol] = False
+        self.is_rsi_oversold[symbol] = False
+        self.prev_close[symbol] = 0.0
+        self.hwm[symbol] = 0.0
+        self._save_hwm()
+        self._rebuild_positions_df()
+
+        est_amount: float = buy_qty * buy_price
+        self.log(f"✅ [Watch Only 매수] {symbol} {buy_qty}주 {pct_label} ≈ ${est_amount:,.0f}", send_tg=True)
+        self._log_trade(symbol, "매수", buy_qty, buy_price, est_amount, f"[Watch Only] 매수 전환 {pct_label}")
+        return {
+            "success": True,
+            "message": f"{symbol} watch-only 매수 완료 ({buy_qty}주)",
+            "symbol": symbol,
+            "quantity": buy_qty,
+            "price": buy_price,
             "est_amount": est_amount,
         }
 
@@ -1549,6 +1708,8 @@ class TradingBot:
         to_remove: List[str] = []
         for slot in self.slot_manager.get_active_slots():
             sym: str = slot['symbol']
+            if bool(slot.get('watch_only', False)):
+                continue
             if sym in api_symbols:
                 continue
             added_at_str: str = slot.get('added_at', '')
