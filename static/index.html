@@ -651,6 +651,7 @@
         }
 
         (function initSoundIcon() {
+            slotColorLock = loadSlotColorLock();
             if (soundEnabled) {
                 const icon = document.querySelector('#soundToggle i');
                 if (icon) icon.className = 'fa-solid fa-volume-high text-sm';
@@ -1219,49 +1220,73 @@
             { glow: 'glow-cyan', border: 'border-cyan-500/30', bg: 'bg-cyan-600', text: 'text-cyan-400' },
         ];
 
-        // 고정 3종 + 추가 슬롯 우선순위(노랑→보라→시안)
+        // 슬롯 색상 고정 맵 (순서 변경과 무관하게 심볼 기준 고정)
+        const SLOT_COLOR_LOCK_KEY = 'stb_slot_color_lock_v1';
         const FIXED_SYMBOL_COLOR_MAP = {
             'NVDL': 0, // green
             'TSLL': 1, // red
             'TQQQ': 2, // blue
+            'SOXL': 4, // amber
+            'UPRO': 3, // purple
+            'TECL': 5, // cyan
         };
         const ADDED_SLOT_COLOR_PRIORITY = [4, 3, 5, 0, 1, 2]; // amber, purple, cyan, ...
+        let slotColorLock = {};
 
-        function buildSlotColorMap() {
-            const map = {};
-            const used = new Set();
+        function loadSlotColorLock() {
+            try {
+                const raw = localStorage.getItem(SLOT_COLOR_LOCK_KEY);
+                if (!raw) return {};
+                const parsed = JSON.parse(raw);
+                return (parsed && typeof parsed === 'object') ? parsed : {};
+            } catch (_) {
+                return {};
+            }
+        }
+
+        function saveSlotColorLock() {
+            try { localStorage.setItem(SLOT_COLOR_LOCK_KEY, JSON.stringify(slotColorLock)); } catch (_) {}
+        }
+
+        function syncSlotColorLock() {
             const symbols = Array.isArray(currentSlots)
                 ? currentSlots.map((s) => sanitizeSymbol(s?.symbol || '')).filter(Boolean)
                 : [];
+            const active = new Set(symbols);
+            const used = new Set();
 
-            // 1) 고정 심볼 우선 배정
-            symbols.forEach((sym) => {
-                const fixedIdx = FIXED_SYMBOL_COLOR_MAP[sym];
-                if (fixedIdx === undefined || used.has(fixedIdx)) return;
-                map[sym] = fixedIdx;
-                used.add(fixedIdx);
+            Object.entries(FIXED_SYMBOL_COLOR_MAP).forEach(([sym, idx]) => {
+                if (!active.has(sym)) return;
+                slotColorLock[sym] = idx;
+                used.add(idx);
             });
 
-            // 2) 나머지 슬롯은 우선순위(노랑→보라→시안)로 빈 색상 배정
             symbols.forEach((sym) => {
-                if (map[sym] !== undefined) return;
+                if (FIXED_SYMBOL_COLOR_MAP[sym] !== undefined) return;
+                const existing = Number(slotColorLock[sym]);
+                if (Number.isInteger(existing) && existing >= 0 && existing < SLOT_COLORS.length && !used.has(existing)) {
+                    used.add(existing);
+                    return;
+                }
                 let picked = ADDED_SLOT_COLOR_PRIORITY.find((idx) => !used.has(idx));
                 if (picked === undefined) picked = SLOT_COLORS.findIndex((_, idx) => !used.has(idx));
-                if (picked === undefined || picked < 0) {
-                    picked = (Object.keys(map).length) % SLOT_COLORS.length;
-                }
-                map[sym] = picked;
+                if (picked === undefined || picked < 0) picked = 0;
+                slotColorLock[sym] = picked;
                 used.add(picked);
             });
-            return map;
+
+            Object.keys(slotColorLock).forEach((sym) => {
+                if (!active.has(sym) && FIXED_SYMBOL_COLOR_MAP[sym] === undefined) delete slotColorLock[sym];
+            });
+            saveSlotColorLock();
         }
 
         function getSlotColor(symbol) {
             const sym = sanitizeSymbol(symbol || '');
             if (!sym) return SLOT_COLORS[0];
-            const map = buildSlotColorMap();
-            const idx = map[sym];
-            if (idx !== undefined) return SLOT_COLORS[idx];
+            syncSlotColorLock();
+            const idx = Number(slotColorLock[sym]);
+            if (Number.isInteger(idx) && idx >= 0 && idx < SLOT_COLORS.length) return SLOT_COLORS[idx];
             const fixedIdx = FIXED_SYMBOL_COLOR_MAP[sym];
             if (fixedIdx !== undefined) return SLOT_COLORS[fixedIdx];
             return SLOT_COLORS[0];
