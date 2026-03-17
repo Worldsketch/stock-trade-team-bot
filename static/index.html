@@ -2096,8 +2096,8 @@
             const container = document.getElementById('strategyContainer');
             const mkRow = (label, value, color) => `
                 <div class="flex justify-between items-center py-2.5 border-b border-slate-700/50 last:border-0">
-                    <span class="text-sm text-slate-400">${label}</span>
-                    <span class="text-sm font-semibold ${color || 'text-white'}">${value}</span>
+                    <span class="text-sm text-slate-400 pr-3">${label}</span>
+                    <span class="text-sm font-semibold text-right max-w-[62%] ${color || 'text-white'}">${value}</span>
                 </div>`;
             let html = '<div class="grid grid-cols-1 md:grid-cols-2 gap-6">';
 
@@ -2109,7 +2109,7 @@
             html += mkRow(`${(p.dca_4_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w4_ratio*100).toFixed(1)}%`);
             html += mkRow(`${(p.dca_8_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w8_ratio*100).toFixed(1)}%`);
             html += mkRow('RSI 과매도 보너스', `총 자산의 ${(p.w4_ratio*100).toFixed(1)}% (RSI<30)`);
-            html += mkRow('매수 주문 방식', '추격형 지정가 (시작 +0.2%, 최대 +0.8%)');
+            html += mkRow('매수 주문 방식', '추격형 지정가 (시작 +0.2%)');
             html += '</div></div>';
 
             html += '<div>';
