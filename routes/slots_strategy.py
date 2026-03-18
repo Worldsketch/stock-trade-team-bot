@@ -268,7 +268,11 @@ def create_slots_strategy_router(
         except Exception:
             return {"success": False, "message": "잘못된 요청입니다."}
 
-        current_symbols = set(bot.symbols)
+        current_symbols = {
+            str(slot.get("symbol", "")).upper()
+            for slot in bot.slot_manager.get_active_slots()
+            if str(slot.get("symbol", "")).strip()
+        }
         request_symbols = {str(s).upper() for s in symbols if str(s).strip()}
         if current_symbols != request_symbols:
             return {"success": False, "message": "요청 순서가 현재 슬롯 구성과 일치하지 않습니다. 새로고침 후 다시 시도해주세요."}

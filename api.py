@@ -732,31 +732,48 @@ class KoreaInvestmentAPI:
             if cached_price > 0:
                 return cached_price
 
-        excd_candidates: List[str] = []
-        if should_try_daytime:
-            excd_candidates.append(self._DAYTIME_EXCD_MAP.get(short_excd, short_excd))
-        excd_candidates.append(short_excd)
+        seen_excd: set = set()
 
-        seen: set = set()
-        for excd in excd_candidates:
-            if excd in seen:
+        def _try_price(base_excd: str) -> float:
+            candidates: List[str] = []
+            if should_try_daytime:
+                candidates.append(self._DAYTIME_EXCD_MAP.get(base_excd, base_excd))
+            candidates.append(base_excd)
+            for excd in candidates:
+                if excd in seen_excd:
+                    continue
+                seen_excd.add(excd)
+                params: Dict[str, str] = {
+                    "AUTH": "",
+                    "EXCD": excd,
+                    "SYMB": symbol
+                }
+                res = requests.get(url, headers=headers, params=params, timeout=(1.0, 2.0))
+                res.raise_for_status()
+                try:
+                    data = res.json()
+                    price = float(data.get('output', {}).get('last', 0))
+                    if price > 0:
+                        return price
+                except (KeyError, ValueError, TypeError):
+                    continue
+            return 0.0
+
+        # 1) 캐시된 거래소 우선
+        price = _try_price(short_excd)
+        if price > 0:
+            self._quote_cache[cache_key] = {"price": price, "ts": now_ts}
+            return price
+
+        # 2) 실패 시 3개 거래소 재탐색 (캐시 오염/변경 대응)
+        for fallback_excd in ("NAS", "NYS", "AMS"):
+            if fallback_excd == short_excd:
                 continue
-            seen.add(excd)
-            params: Dict[str, str] = {
-                "AUTH": "",
-                "EXCD": excd,
-                "SYMB": symbol
-            }
-            res = requests.get(url, headers=headers, params=params, timeout=(1.0, 2.0))
-            res.raise_for_status()
-            try:
-                data = res.json()
-                price = float(data.get('output', {}).get('last', 0))
-                if price > 0:
-                    self._quote_cache[cache_key] = {"price": price, "ts": now_ts}
-                    return price
-            except (KeyError, ValueError, TypeError):
-                continue
+            price = _try_price(fallback_excd)
+            if price > 0:
+                self._exchange_cache[symbol] = fallback_excd
+                self._quote_cache[cache_key] = {"price": price, "ts": now_ts}
+                return price
         return 0.0
 
     @retry_api(max_retries=2, delay_sec=0.15)

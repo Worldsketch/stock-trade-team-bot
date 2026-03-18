@@ -1,6 +1,7 @@
 import os
+import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Set
 
 from fastapi import APIRouter, Depends
 
@@ -34,8 +35,12 @@ def create_status_router(
 ) -> APIRouter:
     router = APIRouter()
     slot_price_cache: Dict[str, Dict[str, float]] = {}
-    slot_price_ttl_sec: float = 5.0
+    slot_price_ttl_sec: float = 15.0
     quote_rr_state: Dict[str, int] = {"idx": 0}
+    quote_refresh_inflight: Set[str] = set()
+    quote_refresh_last_ts: Dict[str, float] = {}
+    quote_refresh_min_interval_sec: float = 1.5
+    quote_refresh_lock = threading.Lock()
 
     def _get_cached_slot_price(symbol: str, now_ts: float) -> float:
         cached = slot_price_cache.get(symbol)
@@ -61,6 +66,34 @@ def create_status_router(
         quote_rr_state["idx"] = idx + 1
         return str(picked)
 
+    def _schedule_slot_price_refresh(bot: TradingBot, symbol: str, prefer_daytime: bool) -> bool:
+        sym = str(symbol or "").upper().strip()
+        if not sym:
+            return False
+        now_ts = time.time()
+        with quote_refresh_lock:
+            if sym in quote_refresh_inflight:
+                return False
+            last_ts = float(quote_refresh_last_ts.get(sym, 0.0) or 0.0)
+            if (now_ts - last_ts) < quote_refresh_min_interval_sec:
+                return False
+            quote_refresh_inflight.add(sym)
+            quote_refresh_last_ts[sym] = now_ts
+
+        def _worker() -> None:
+            try:
+                price = float(bot.api.get_current_price(sym, prefer_daytime=prefer_daytime) or 0.0)
+                if price > 0:
+                    _set_cached_slot_price(sym, price, time.time())
+            except Exception:
+                pass
+            finally:
+                with quote_refresh_lock:
+                    quote_refresh_inflight.discard(sym)
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
+
     @router.get("/api/status")
     def get_status(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
@@ -85,7 +118,7 @@ def create_status_router(
                 active_slots = bot.slot_manager.get_active_slots()
                 slot_map: Dict[str, Dict[str, Any]] = {slot.get("symbol"): slot for slot in active_slots}
                 existing_symbols = {str(p.get("symbol", "")).upper() for p in positions_list if p.get("symbol")}
-                quote_refresh_budget: int = 1
+                quote_refresh_budget: int = 6
 
                 for position in positions_list:
                     symbol = str(position.get("symbol", "")).upper()
@@ -110,12 +143,8 @@ def create_status_router(
                         continue
                     fallback_price: float = _get_cached_slot_price(symbol, now)
                     if fallback_price <= 0 and quote_refresh_budget > 0:
-                        quote_refresh_budget -= 1
-                        try:
-                            fallback_price = float(bot.api.get_current_price(symbol, prefer_daytime=is_daytime_session) or 0.0)
-                            _set_cached_slot_price(symbol, fallback_price, now)
-                        except Exception:
-                            pass
+                        if _schedule_slot_price_refresh(bot, symbol, is_daytime_session):
+                            quote_refresh_budget -= 1
                     positions_list.append(
                         {
                             "symbol": symbol,
@@ -138,20 +167,11 @@ def create_status_router(
                         for p in positions_list
                         if float(p.get("current_price", 0.0) or 0.0) <= 0.0 and p.get("symbol")
                     ]
-                    target_symbol = _pick_round_robin_symbol(refresh_candidates)
-                    if target_symbol:
-                        try:
-                            fresh_price = float(
-                                bot.api.get_current_price(target_symbol, prefer_daytime=is_daytime_session) or 0.0
-                            )
-                            if fresh_price > 0:
-                                _set_cached_slot_price(target_symbol, fresh_price, now)
-                                for p in positions_list:
-                                    if str(p.get("symbol", "")).upper() == target_symbol:
-                                        p["current_price"] = fresh_price
-                                        break
-                        except Exception:
-                            pass
+                    for _ in range(min(quote_refresh_budget, len(refresh_candidates))):
+                        target_symbol = _pick_round_robin_symbol(refresh_candidates)
+                        if not target_symbol:
+                            break
+                        _schedule_slot_price_refresh(bot, target_symbol, is_daytime_session)
 
                 slot_order: Dict[str, int] = {str(slot.get("symbol", "")).upper(): idx for idx, slot in enumerate(active_slots)}
                 positions_list.sort(key=lambda position: slot_order.get(str(position.get("symbol", "")).upper(), 999))
@@ -218,7 +238,7 @@ def create_status_router(
             current_symbols: list = list(all_slot_symbols)
             positions_list: list = []
             held_symbols: set = set()
-            quote_refresh_budget: int = 1
+            quote_refresh_budget: int = 6
             slot_map: Dict[str, Dict[str, Any]] = {slot.get("symbol"): slot for slot in active_slots}
             sorted_positions = sorted(
                 data.get("positions", []),
@@ -293,18 +313,11 @@ def create_status_router(
                     for p in positions_list
                     if float(p.get("current_price", 0.0) or 0.0) <= 0.0 and p.get("symbol")
                 ]
-                target_symbol = _pick_round_robin_symbol(refresh_candidates)
-                if target_symbol:
-                    try:
-                        fresh_price = float(bot.api.get_current_price(target_symbol, prefer_daytime=is_daytime_session) or 0.0)
-                        if fresh_price > 0:
-                            _set_cached_slot_price(target_symbol, fresh_price, now)
-                            for p in positions_list:
-                                if str(p.get("symbol", "")).upper() == target_symbol:
-                                    p["current_price"] = fresh_price
-                                    break
-                    except Exception:
-                        pass
+                for _ in range(min(quote_refresh_budget, len(refresh_candidates))):
+                    target_symbol = _pick_round_robin_symbol(refresh_candidates)
+                    if not target_symbol:
+                        break
+                    _schedule_slot_price_refresh(bot, target_symbol, is_daytime_session)
 
             slot_order: Dict[str, int] = {slot["symbol"]: idx for idx, slot in enumerate(active_slots)}
             positions_list.sort(key=lambda position: slot_order.get(position["symbol"], 999))

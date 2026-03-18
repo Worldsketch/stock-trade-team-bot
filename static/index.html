@@ -651,7 +651,6 @@
         }
 
         (function initSoundIcon() {
-            slotColorLock = loadSlotColorLock();
             if (soundEnabled) {
                 const icon = document.querySelector('#soundToggle i');
                 if (icon) icon.className = 'fa-solid fa-volume-high text-sm';
@@ -1034,6 +1033,11 @@
                 if (!data.error) {
                     lastData = data;
                     updateUI(data);
+                    if (isDashboardTabActive() && currentChartSymbol) {
+                        loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval, { keepRange: false })
+                            .then(() => fetchChartQuote())
+                            .catch(() => {});
+                    }
                     if (!_aiReportHydrated) {
                         await fetchAiReport();
                         _aiReportHydrated = true;
@@ -1198,6 +1202,11 @@
                 if (data.error) return false;
                 lastData = data;
                 updateUI(data);
+                if (isDashboardTabActive() && currentChartSymbol && !_lastCandle) {
+                    loadChartData(currentChartSymbol, currentChartPeriod, currentChartInterval, { keepRange: false })
+                        .then(() => fetchChartQuote())
+                        .catch(() => {});
+                }
                 if (!_aiReportHydrated) {
                     await fetchAiReport();
                     _aiReportHydrated = true;
@@ -1219,6 +1228,12 @@
             { glow: 'glow-amber', border: 'border-amber-500/30', bg: 'bg-amber-600', text: 'text-amber-400' },
             { glow: 'glow-cyan', border: 'border-cyan-500/30', bg: 'bg-cyan-600', text: 'text-cyan-400' },
         ];
+        const WATCH_ONLY_CARD_COLOR = {
+            glow: '',
+            border: 'border-slate-600/70',
+            bg: 'bg-slate-700',
+            text: 'text-slate-300',
+        };
 
         // 슬롯 색상 고정 맵 (순서 변경과 무관하게 심볼 기준 고정)
         const SLOT_COLOR_LOCK_KEY = 'stb_slot_color_lock_v1';
@@ -1243,41 +1258,53 @@
                 return {};
             }
         }
+        slotColorLock = loadSlotColorLock();
 
         function saveSlotColorLock() {
             try { localStorage.setItem(SLOT_COLOR_LOCK_KEY, JSON.stringify(slotColorLock)); } catch (_) {}
         }
 
         function syncSlotColorLock() {
-            const symbols = Array.isArray(currentSlots)
-                ? currentSlots.map((s) => sanitizeSymbol(s?.symbol || '')).filter(Boolean)
-                : [];
-            const active = new Set(symbols);
+            const slots = Array.isArray(currentSlots) ? currentSlots : [];
+            const nextLock = {};
             const used = new Set();
 
-            Object.entries(FIXED_SYMBOL_COLOR_MAP).forEach(([sym, idx]) => {
-                if (!active.has(sym)) return;
-                slotColorLock[sym] = idx;
-                used.add(idx);
-            });
-
-            symbols.forEach((sym) => {
-                if (FIXED_SYMBOL_COLOR_MAP[sym] !== undefined) return;
-                const existing = Number(slotColorLock[sym]);
-                if (Number.isInteger(existing) && existing >= 0 && existing < SLOT_COLORS.length && !used.has(existing)) {
-                    used.add(existing);
-                    return;
+            // 1) 핵심 3종 + 고정 매핑 종목은 항상 고정 색상
+            slots.forEach((slot) => {
+                const sym = sanitizeSymbol(slot?.symbol || '');
+                if (!sym) return;
+                const fixedIdx = FIXED_SYMBOL_COLOR_MAP[sym];
+                if (fixedIdx !== undefined) {
+                    nextLock[sym] = fixedIdx;
+                    used.add(fixedIdx);
                 }
-                let picked = ADDED_SLOT_COLOR_PRIORITY.find((idx) => !used.has(idx));
-                if (picked === undefined) picked = SLOT_COLORS.findIndex((_, idx) => !used.has(idx));
-                if (picked === undefined || picked < 0) picked = 0;
-                slotColorLock[sym] = picked;
-                used.add(picked);
             });
 
-            Object.keys(slotColorLock).forEach((sym) => {
-                if (!active.has(sym) && FIXED_SYMBOL_COLOR_MAP[sym] === undefined) delete slotColorLock[sym];
+            // 2) 추가 슬롯은 추가 시각 기준으로 amber -> purple -> cyan ... 순서 고정
+            const addedSlots = slots
+                .map((slot) => {
+                    const sym = sanitizeSymbol(slot?.symbol || '');
+                    return {
+                        sym,
+                        addedAt: String(slot?.added_at || slot?.anchor_at || ''),
+                    };
+                })
+                .filter((slot) => slot.sym && FIXED_SYMBOL_COLOR_MAP[slot.sym] === undefined)
+                .sort((a, b) => {
+                    if (a.addedAt !== b.addedAt) return a.addedAt.localeCompare(b.addedAt);
+                    return a.sym.localeCompare(b.sym);
+                });
+
+            addedSlots.forEach((slot, idx) => {
+                let colorIdx = ADDED_SLOT_COLOR_PRIORITY.find((c) => !used.has(c));
+                if (colorIdx === undefined) {
+                    colorIdx = ADDED_SLOT_COLOR_PRIORITY[idx % ADDED_SLOT_COLOR_PRIORITY.length];
+                }
+                nextLock[slot.sym] = colorIdx;
+                used.add(colorIdx);
             });
+
+            slotColorLock = nextLock;
             saveSlotColorLock();
         }
 
@@ -1367,18 +1394,21 @@
 
         function buildPositionCardSkeleton(pos) {
             const safeSymbol = sanitizeSymbol(pos.symbol);
-            const sc = getSlotColor(safeSymbol);
+            const watchOnly = pos.watch_only === true;
+            const sc = watchOnly ? WATCH_ONLY_CARD_COLOR : getSlotColor(safeSymbol);
             const glowClass = sc.glow || '';
             const borderClass = sc.border || 'border-slate-600';
             const iconBg = sc.bg || 'bg-slate-600';
+            const iconText = watchOnly ? 'text-slate-300' : 'text-white';
+            const titleText = watchOnly ? 'text-slate-300' : 'text-white';
             const abbr = getAbbr(safeSymbol);
             return `
                 <div class="position-card bg-slate-850 rounded-xl p-5 border ${borderClass} ${glowClass} transition-all" data-position-symbol="${safeSymbol}" draggable="true">
                     <div class="flex items-start justify-between mb-4">
                         <div class="flex items-center gap-3">
-                            <div data-field="icon" class="w-10 h-10 rounded-full ${iconBg} flex items-center justify-center text-sm font-bold text-white shrink-0">${abbr}</div>
+                            <div data-field="icon" class="w-10 h-10 rounded-full ${iconBg} flex items-center justify-center text-sm font-bold ${iconText} shrink-0">${abbr}</div>
                             <div>
-                                <p class="text-lg font-bold text-white leading-tight">${escapeHtml(safeSymbol)}</p>
+                                <p data-field="symbol-title" class="text-lg font-bold ${titleText} leading-tight">${escapeHtml(safeSymbol)}</p>
                                 <p data-field="base-asset" class="text-xs text-slate-500"></p>
                             </div>
                         </div>
@@ -1412,7 +1442,7 @@
             const isPos = retRate > 0;
             const evalUsd = Number(pos.evlu_amt || (pos.quantity * pos.current_price) || 0);
             const plUsd = Number(pos.evlu_pfls || 0);
-            const sc = getSlotColor(pos.symbol);
+            const sc = watchOnly ? WATCH_ONLY_CARD_COLOR : getSlotColor(pos.symbol);
             const glowClass = sc.glow || '';
             const borderClass = sc.border || 'border-slate-600';
             const iconBg = sc.bg || 'bg-slate-600';
@@ -1434,8 +1464,12 @@
             card.className = `position-card bg-slate-850 rounded-xl p-5 border ${borderClass} ${glowClass} transition-all`;
             const iconEl = card.querySelector('[data-field="icon"]');
             if (iconEl) {
-                iconEl.className = `w-10 h-10 rounded-full ${iconBg} flex items-center justify-center text-sm font-bold text-white shrink-0`;
+                iconEl.className = `w-10 h-10 rounded-full ${iconBg} flex items-center justify-center text-sm font-bold ${watchOnly ? 'text-slate-300' : 'text-white'} shrink-0`;
                 iconEl.textContent = getAbbr(pos.symbol);
+            }
+            const symbolTitleEl = card.querySelector('[data-field="symbol-title"]');
+            if (symbolTitleEl) {
+                symbolTitleEl.className = `text-lg font-bold ${watchOnly ? 'text-slate-300' : 'text-white'} leading-tight`;
             }
             const baseEl = card.querySelector('[data-field="base-asset"]');
             if (baseEl) {
