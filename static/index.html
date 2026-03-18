@@ -1442,7 +1442,7 @@
         function updatePositionCard(card, pos, rate) {
             const watchOnly = pos.watch_only === true;
             const anchorPrice = Number(pos.anchor_price || 0);
-            const peakPriceRaw = Number(pos.peak_price || 0);
+            const peakPriceRaw = Number(pos.all_time_high || pos.peak_price || 0);
             const symbol = sanitizeSymbol(pos.symbol || '');
             const rawCurrentPrice = Number(pos.current_price || 0);
             if (watchOnly && symbol && rawCurrentPrice > 0) {

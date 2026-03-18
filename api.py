@@ -850,6 +850,10 @@ class KoreaInvestmentAPI:
             "6mo": 184,
             "1y": 366,
             "2y": 731,
+            "3y": 1096,
+            "5y": 1827,
+            "10y": 3653,
+            "max": 3653,
         }
         keep_days: int = keep_days_map.get(period, 366)
 
@@ -859,6 +863,10 @@ class KoreaInvestmentAPI:
             "6mo": 3,
             "1y": 5,
             "2y": 8,
+            "3y": 12,
+            "5y": 20,
+            "10y": 40,
+            "max": 40,
         }
         max_batches: int = max_batches_map.get(period, 5)
         target_rows_map: Dict[str, int] = {
@@ -867,6 +875,10 @@ class KoreaInvestmentAPI:
             "6mo": 120,
             "1y": 200,
             "2y": 400,
+            "3y": 750,
+            "5y": 1300,
+            "10y": 2800,
+            "max": 2800,
         }
         target_rows: int = target_rows_map.get(period, 200)
         cutoff_date = (now_et - timedelta(days=keep_days + 7)).date()
