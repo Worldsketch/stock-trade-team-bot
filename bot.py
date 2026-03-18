@@ -448,6 +448,8 @@ class TradingBot:
             return float(cached.get("ath", 0.0) or 0.0)
 
         ath: float = 0.0
+        now_et_ts: int = int(datetime.now(ZoneInfo("America/New_York")).timestamp())
+        recent_cutoff_ts: int = now_et_ts - (1096 * 86400)  # 최근 3년
         for period in ("10y", "5y", "2y"):
             try:
                 candles: List[Dict[str, Any]] = self.api.get_daily_candles(symbol, period=period)
@@ -456,15 +458,28 @@ class TradingBot:
             if not candles:
                 continue
             highs: List[float] = []
+            recent_highs: List[float] = []
             for candle in candles:
+                ts_epoch = int(candle.get("time", 0) or 0)
                 h = float(candle.get("high", 0.0) or 0.0)
                 c = float(candle.get("close", 0.0) or 0.0)
+                value = 0.0
                 if h > 0:
-                    highs.append(h)
+                    value = h
                 elif c > 0:
-                    highs.append(c)
+                    value = c
+                if value <= 0:
+                    continue
+                highs.append(value)
+                if ts_epoch > 0 and ts_epoch >= recent_cutoff_ts:
+                    recent_highs.append(value)
             if highs:
-                ath = max(ath, max(highs))
+                raw_ath: float = max(highs)
+                recent_ath: float = max(recent_highs) if recent_highs else 0.0
+                # 장기 원본값에 분할/병합 왜곡이 있으면 최근 구간 최고가로 보정
+                if recent_ath > 0 and raw_ath > (recent_ath * 4.0):
+                    raw_ath = recent_ath
+                ath = max(ath, raw_ath)
                 break
         self._ath_cache[symbol] = {"ath": float(ath), "ts": now_ts}
         return float(ath)
@@ -479,8 +494,10 @@ class TradingBot:
 
         cur_ath: float = float(slot_info.get("all_time_high", 0.0) or 0.0)
         peak_price: float = float(slot_info.get("peak_price", 0.0) or 0.0)
+        anchor_price: float = float(slot_info.get("anchor_price", 0.0) or 0.0)
         source: str = str(slot_info.get("peak_source", "legacy") or "legacy").lower()
-        if source == "ath" and cur_ath > 0 and peak_price > 0:
+        suspicious_ath: bool = anchor_price > 0 and cur_ath > (anchor_price * 8.0)
+        if source == "ath" and cur_ath > 0 and peak_price > 0 and (not suspicious_ath):
             return max(cur_ath, peak_price)
 
         now_ts: float = time.time()
@@ -498,10 +515,11 @@ class TradingBot:
         if ath <= 0:
             ath = max(cur_ath, peak_price, float(price_hint or 0.0), float(slot_info.get("anchor_price", 0.0) or 0.0))
         if ath > 0:
+            next_peak: float = ath if suspicious_ath else max(peak_price, ath)
             self.slot_manager.update_slot(
                 sym,
                 all_time_high=ath,
-                peak_price=max(peak_price, ath),
+                peak_price=next_peak,
                 peak_source="ath",
             )
         return ath
