@@ -446,9 +446,13 @@
                         <div class="flex gap-2">
                             <div class="flex-1 relative">
                                 <input type="text" id="tickerSearchInput" placeholder="종목명 또는 티커 입력 (예: apple, NVDL)" maxlength="20"
-                                    class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white uppercase focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                                    class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 pr-10 text-white uppercase focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
                                     onkeydown="if(event.key==='Enter'){event.preventDefault();selectFirstOrSearch()}"
                                     oninput="onTickerInput(this.value)" autocomplete="off">
+                                <button id="tickerClearBtn" type="button" onclick="clearTickerInput()" aria-label="입력 지우기"
+                                    class="hidden absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md bg-slate-700/80 hover:bg-slate-600 text-slate-300 hover:text-white transition-colors">
+                                    <i class="fa-solid fa-xmark text-xs"></i>
+                                </button>
                                 <div id="autocompleteDropdown" class="hidden absolute left-0 right-0 top-full mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 max-h-64 overflow-y-auto"></div>
                             </div>
                             <button onclick="searchTicker()" class="bg-blue-600 hover:bg-blue-500 text-white font-medium px-4 rounded-lg transition-colors">
@@ -586,6 +590,7 @@
         let _addSlotModalMode = 'add';
         let _addSlotLockedSymbol = '';
         let _watchRemoveTarget = '';
+        let _lastWatchPriceBySymbol = new Map();
         const POLL_STATUS_NORMAL_MS = 2500;
         const POLL_STATUS_RISK_MS = 6000;
         const POLL_STATUS_IDLE_MS = 15000;
@@ -1436,7 +1441,14 @@
         function updatePositionCard(card, pos, rate) {
             const watchOnly = pos.watch_only === true;
             const anchorPrice = Number(pos.anchor_price || 0);
-            const currentPrice = Number(pos.current_price || 0);
+            const symbol = sanitizeSymbol(pos.symbol || '');
+            const rawCurrentPrice = Number(pos.current_price || 0);
+            if (watchOnly && symbol && rawCurrentPrice > 0) {
+                _lastWatchPriceBySymbol.set(symbol, rawCurrentPrice);
+            }
+            const currentPrice = (watchOnly && rawCurrentPrice <= 0 && symbol && _lastWatchPriceBySymbol.has(symbol))
+                ? Number(_lastWatchPriceBySymbol.get(symbol) || 0)
+                : rawCurrentPrice;
             const watchRetRate = (anchorPrice > 0 && currentPrice > 0) ? ((currentPrice - anchorPrice) / anchorPrice * 100) : 0;
             const retRate = watchOnly ? watchRetRate : Number(pos.return_rate || 0);
             const isPos = retRate > 0;
@@ -1474,7 +1486,7 @@
             const baseEl = card.querySelector('[data-field="base-asset"]');
             if (baseEl) {
                 if (watchOnly) {
-                    baseEl.textContent = `${leverageText} · watch-only`;
+                    baseEl.textContent = `${leverageText} · Watch`;
                 } else {
                     baseEl.textContent = leverageText;
                 }
@@ -1681,6 +1693,15 @@
                     nextSlots = sortSlotsByOrder(nextSlots, _preferredSlotOrderSymbols);
                 }
                 currentSlots = nextSlots;
+                const activeWatchSymbols = new Set(
+                    currentSlots
+                        .filter((s) => s && s.watch_only === true)
+                        .map((s) => sanitizeSymbol(s.symbol || ''))
+                        .filter(Boolean)
+                );
+                for (const key of _lastWatchPriceBySymbol.keys()) {
+                    if (!activeWatchSymbols.has(key)) _lastWatchPriceBySymbol.delete(key);
+                }
                 if (!_slotsReorderInFlight) {
                     _preferredSlotOrderSymbols = currentSlots.map((s) => String(s.symbol || '').toUpperCase()).filter(Boolean);
                 }
@@ -2536,6 +2557,7 @@
             document.getElementById('tickerSearchResult').classList.add('hidden');
             document.getElementById('autocompleteDropdown').classList.add('hidden');
             document.getElementById('popularTickersSection').style.display = '';
+            updateTickerClearButton();
             document.getElementById('tickerSearchInput').focus();
         }
         function openWatchBuyModal(symbol) {
@@ -2548,6 +2570,7 @@
             document.getElementById('tickerSearchInput').value = safeSymbol;
             document.getElementById('tickerSearchResult').classList.remove('hidden');
             document.getElementById('tickerSearchResult').innerHTML = '<div class="flex items-center justify-center py-4"><i class="fa-solid fa-spinner fa-spin text-emerald-400 mr-2"></i><span class="text-sm text-emerald-400">매수 정보 로딩 중...</span></div>';
+            updateTickerClearButton();
             searchTicker();
         }
         function applyAddSlotModeUi() {
@@ -2560,6 +2583,7 @@
             if (popular) popular.style.display = isWatchBuy ? 'none' : '';
             if (titleText) titleText.textContent = isWatchBuy ? '관찰 슬롯 매수' : '종목 추가';
             if (titleIcon) titleIcon.className = isWatchBuy ? 'fa-solid fa-cart-plus text-emerald-400' : 'fa-solid fa-plus-circle text-emerald-400';
+            updateTickerClearButton();
         }
         function closeMarketClosedModal() {
             document.getElementById('marketClosedModal').classList.add('hidden');
@@ -2572,6 +2596,7 @@
             _addSlotModalMode = 'add';
             _addSlotLockedSymbol = '';
             applyAddSlotModeUi();
+            updateTickerClearButton();
         }
         function isAddSlotModalOpen() {
             const modal = document.getElementById('addSlotModal');
@@ -2609,6 +2634,7 @@
             const dropdown = document.getElementById('autocompleteDropdown');
             const popular = document.getElementById('popularTickersSection');
             const spinner = document.getElementById('autocompleteSpinner');
+            updateTickerClearButton();
 
             if (q.length < 1) {
                 dropdown.classList.add('hidden');
@@ -2627,6 +2653,23 @@
 
             spinner.classList.remove('hidden');
             _acTimer = setTimeout(() => fetchAutocomplete(q), 300);
+        }
+
+        function updateTickerClearButton() {
+            const inputEl = document.getElementById('tickerSearchInput');
+            const clearBtn = document.getElementById('tickerClearBtn');
+            if (!inputEl || !clearBtn) return;
+            const hasText = String(inputEl.value || '').trim().length > 0;
+            const isWatchBuy = _addSlotModalMode === 'watch_buy';
+            clearBtn.classList.toggle('hidden', !hasText || isWatchBuy);
+        }
+
+        function clearTickerInput() {
+            const inputEl = document.getElementById('tickerSearchInput');
+            if (!inputEl) return;
+            inputEl.value = '';
+            onTickerInput('');
+            inputEl.focus();
         }
 
         async function fetchAutocomplete(query) {
@@ -2673,6 +2716,7 @@
             document.getElementById('tickerSearchInput').value = sym;
             document.getElementById('autocompleteDropdown').classList.add('hidden');
             _acHighlight = -1;
+            updateTickerClearButton();
             searchTicker();
         }
 
@@ -2711,6 +2755,7 @@
         function quickSearch(sym) {
             document.getElementById('tickerSearchInput').value = sym;
             document.getElementById('autocompleteDropdown').classList.add('hidden');
+            updateTickerClearButton();
             searchTicker();
         }
         async function searchTicker() {

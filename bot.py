@@ -22,7 +22,7 @@ LEVERAGED_ETF_MAP: Dict[str, str] = {
     'TNA': 'IWM', 'UDOW': 'DIA', 'CURE': 'XLV',
     'NAIL': 'ITB', 'DFEN': 'ITA', 'FNGU': 'NYFANG',
     'AAPU': 'AAPL', 'MSFU': 'MSFT', 'AMZU': 'AMZN',
-    'GOOU': 'GOOG', 'METU': 'META', 'CONL': 'COIN',
+    'GGLL': 'GOOG', 'GOOU': 'GOOG', 'METU': 'META', 'CONL': 'COIN',
     'SQQQ': 'QQQ', 'SOXS': 'SOXX', 'SPXU': 'SPY',
     'TECS': 'XLK', 'FAZ': 'XLF', 'TZA': 'IWM',
     'WEBL': 'DJUSTC', 'BITX': 'BTC',
@@ -75,6 +75,7 @@ class SlotManager:
                     data: Dict[str, Any] = json.load(f)
                     loaded_slots = data.get('slots', [])
                     self.slots = []
+                    changed: bool = False
                     for raw in loaded_slots:
                         if not isinstance(raw, dict):
                             continue
@@ -88,8 +89,19 @@ class SlotManager:
                         slot['anchor_price'] = float(slot.get('anchor_price', 0.0) or 0.0)
                         slot['anchor_at'] = str(slot.get('anchor_at', slot.get('added_at', '')) or '')
                         slot['active'] = bool(slot.get('active', True))
+                        # 레버리지 ETF는 본주 매핑을 강제 보정 (과거 저장 데이터 정합성 복구)
+                        if symbol in LEVERAGED_ETF_MAP:
+                            mapped_base = LEVERAGED_ETF_MAP[symbol]
+                            if slot.get('base_asset') != mapped_base:
+                                slot['base_asset'] = mapped_base
+                                changed = True
+                            if not bool(slot.get('is_leveraged', False)):
+                                slot['is_leveraged'] = True
+                                changed = True
                         self.slots.append(slot)
                     self.max_slots = data.get('max_slots', 6)
+                    if changed:
+                        self._save()
         except Exception as e:
             print(f"[슬롯 로드 오류] {e}")
 
