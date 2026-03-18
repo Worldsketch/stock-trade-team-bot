@@ -1838,8 +1838,16 @@ class TradingBot:
         updated_any: bool = False
         now_ts: float = time.time()
         for sym in targets:
-            # 장외 등으로 현재가가 0이어도 역대 최고점 백필은 진행 (관찰/보유 공통)
-            _ = self._ensure_watch_slot_all_time_high(sym, price_hint=0.0)
+            # 장외에도 현재 보유가(캐시/포지션)를 힌트로 ATH 왜곡값을 즉시 재보정
+            pre_price_hint: float = self._get_slot_quote_cache(sym, now_ts=now_ts)
+            if pre_price_hint <= 0 and (not self.positions.empty):
+                mask_hint: pd.Series = self.positions["symbol"] == sym
+                if mask_hint.any():
+                    try:
+                        pre_price_hint = float(self.positions.loc[mask_hint, "current_price"].values[0] or 0.0)
+                    except Exception:
+                        pre_price_hint = 0.0
+            _ = self._ensure_watch_slot_all_time_high(sym, price_hint=pre_price_hint)
             try:
                 price: float = float(self.api.get_current_price(sym, prefer_daytime=prefer_daytime) or 0.0)
             except Exception:
