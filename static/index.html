@@ -591,6 +591,7 @@
         let _addSlotLockedSymbol = '';
         let _watchRemoveTarget = '';
         let _lastWatchPriceBySymbol = new Map();
+        let _queuedStatusRefreshTimer = null;
         const POLL_STATUS_NORMAL_MS = 2500;
         const POLL_STATUS_RISK_MS = 6000;
         const POLL_STATUS_IDLE_MS = 15000;
@@ -1223,6 +1224,138 @@
             } finally {
                 _statusFetchInFlight = false;
             }
+        }
+
+        function queueStatusRefresh(delayMs = 0) {
+            if (_queuedStatusRefreshTimer) {
+                clearTimeout(_queuedStatusRefreshTimer);
+            }
+            _queuedStatusRefreshTimer = setTimeout(async () => {
+                _queuedStatusRefreshTimer = null;
+                const result = await fetchStatus();
+                if (result === null) {
+                    queueStatusRefresh(250);
+                }
+            }, Math.max(0, delayMs));
+        }
+
+        function cloneStatusData(data) {
+            try {
+                return JSON.parse(JSON.stringify(data || {}));
+            } catch (_) {
+                return null;
+            }
+        }
+
+        function applyOptimisticStatusPatch(mutator) {
+            if (!lastData || typeof mutator !== 'function') return false;
+            const nextData = cloneStatusData(lastData);
+            if (!nextData) return false;
+            mutator(nextData);
+            lastData = nextData;
+            updateUI(nextData);
+            return true;
+        }
+
+        function createOptimisticSlotEntry(symbol, data = {}, watchOnly = false) {
+            const safeSymbol = sanitizeSymbol(symbol || data.symbol || '');
+            const price = Number(data.anchor_price || data.price || 0);
+            const nowIso = new Date().toISOString();
+            return {
+                symbol: safeSymbol,
+                base_asset: sanitizeSymbol(data.base_asset || safeSymbol),
+                added_at: nowIso,
+                anchor_at: nowIso,
+                anchor_price: watchOnly ? price : 0,
+                peak_price: price,
+                all_time_high: price,
+                peak_source: 'ath',
+                watch_only: watchOnly,
+                is_leveraged: data.is_leveraged === true,
+                active: true,
+            };
+        }
+
+        function createOptimisticPositionEntry(symbol, data = {}, watchOnly = false) {
+            const safeSymbol = sanitizeSymbol(symbol || data.symbol || '');
+            const price = Number(data.anchor_price || data.price || 0);
+            return {
+                symbol: safeSymbol,
+                quantity: 0,
+                avg_price: 0,
+                current_price: price,
+                return_rate: 0,
+                evlu_amt: 0,
+                evlu_pfls: 0,
+                pchs_amt: 0,
+                is_leveraged: data.is_leveraged === true,
+                base_asset: sanitizeSymbol(data.base_asset || safeSymbol),
+                watch_only: watchOnly,
+                anchor_price: watchOnly ? price : 0,
+                peak_price: price,
+                all_time_high: price,
+                anchor_at: new Date().toISOString(),
+                base_price: 0,
+            };
+        }
+
+        function applyOptimisticSlotUpsert(symbol, data = {}, options = {}) {
+            const watchOnly = options.watchOnly === true;
+            const safeSymbol = sanitizeSymbol(symbol || data.symbol || '');
+            if (!safeSymbol) return false;
+            return applyOptimisticStatusPatch((nextData) => {
+                nextData.slots = Array.isArray(nextData.slots) ? nextData.slots : [];
+                nextData.positions = Array.isArray(nextData.positions) ? nextData.positions : [];
+
+                const slotIdx = nextData.slots.findIndex((slot) => sanitizeSymbol(slot?.symbol || '') === safeSymbol);
+                const nextSlot = createOptimisticSlotEntry(safeSymbol, data, watchOnly);
+                if (slotIdx >= 0) nextData.slots[slotIdx] = { ...nextData.slots[slotIdx], ...nextSlot };
+                else nextData.slots.push(nextSlot);
+
+                const posIdx = nextData.positions.findIndex((pos) => sanitizeSymbol(pos?.symbol || '') === safeSymbol);
+                const nextPos = createOptimisticPositionEntry(safeSymbol, data, watchOnly);
+                if (posIdx >= 0) nextData.positions[posIdx] = { ...nextData.positions[posIdx], ...nextPos };
+                else nextData.positions.push(nextPos);
+            });
+        }
+
+        function applyOptimisticWatchBuy(symbol, data = {}) {
+            const safeSymbol = sanitizeSymbol(symbol || data.symbol || '');
+            if (!safeSymbol) return false;
+            return applyOptimisticStatusPatch((nextData) => {
+                nextData.slots = Array.isArray(nextData.slots) ? nextData.slots : [];
+                nextData.positions = Array.isArray(nextData.positions) ? nextData.positions : [];
+                const slot = nextData.slots.find((item) => sanitizeSymbol(item?.symbol || '') === safeSymbol);
+                if (slot) {
+                    slot.watch_only = false;
+                    slot.anchor_price = 0;
+                }
+                const pos = nextData.positions.find((item) => sanitizeSymbol(item?.symbol || '') === safeSymbol);
+                if (pos) {
+                    pos.watch_only = false;
+                    pos.anchor_price = 0;
+                    if (Number(pos.current_price || 0) <= 0 && Number(data.price || 0) > 0) {
+                        pos.current_price = Number(data.price || 0);
+                    }
+                } else {
+                    nextData.positions.push(createOptimisticPositionEntry(safeSymbol, data, false));
+                }
+            });
+        }
+
+        function applyOptimisticSlotRemove(symbol) {
+            const safeSymbol = sanitizeSymbol(symbol || '');
+            if (!safeSymbol) return false;
+            return applyOptimisticStatusPatch((nextData) => {
+                nextData.slots = (Array.isArray(nextData.slots) ? nextData.slots : [])
+                    .filter((slot) => sanitizeSymbol(slot?.symbol || '') !== safeSymbol);
+                nextData.positions = (Array.isArray(nextData.positions) ? nextData.positions : [])
+                    .filter((pos) => sanitizeSymbol(pos?.symbol || '') !== safeSymbol);
+                if (safeSymbol === currentChartSymbol) {
+                    const fallback = nextData.slots[0]?.symbol || '';
+                    currentChartSymbol = sanitizeSymbol(fallback);
+                }
+            });
         }
 
         const SLOT_COLORS = [
@@ -2916,8 +3049,13 @@
                 if (data.success) {
                     showToast(isWatchBuy ? `${symbol} watch-only 매수 전환 완료` : `${symbol} 슬롯 추가 완료!`);
                     _selectedBuyPercent = 0;
+                    if (isWatchBuy) {
+                        applyOptimisticWatchBuy(symbol, data);
+                    } else {
+                        applyOptimisticSlotUpsert(symbol, data, { watchOnly: false });
+                    }
                     closeAddSlotModal();
-                    fetchStatus();
+                    queueStatusRefresh(50);
                     if (isWatchBuy) setTimeout(fetchPendingOrders, 1000);
                 } else {
                     const msg = escapeHtml(data.message || '슬롯 추가 실패');
@@ -2942,8 +3080,9 @@
                 const data = await res.json();
                 if (data.success) {
                     showToast(`${symbol} watch-only 슬롯 추가 완료`);
+                    applyOptimisticSlotUpsert(symbol, data, { watchOnly: true });
                     closeAddSlotModal();
-                    fetchStatus();
+                    queueStatusRefresh(50);
                 } else {
                     const msg = escapeHtml(data.message || 'watch-only 슬롯 추가 실패');
                     resultDiv.innerHTML = `<div class="bg-rose-500/10 rounded-xl p-4 text-center"><p class="text-sm text-rose-400">${msg}</p></div>`;
@@ -2988,7 +3127,8 @@
                 const data = await res.json();
                 if (data.success) {
                     showToast(`${symbol} watch-only 슬롯 삭제 완료`);
-                    fetchStatus();
+                    applyOptimisticSlotRemove(symbol);
+                    queueStatusRefresh(50);
                 } else {
                     showToast(data.message || '삭제 실패', true);
                 }
@@ -3010,21 +3150,23 @@
             if (!_removeTarget) return;
             const auth = getAuthHeader();
             if (!auth) { showLogin(); return; }
+            const symbol = _removeTarget;
             closeRemoveSlotModal();
-            showToast(`${_removeTarget} 슬롯 제거 처리 중...`);
+            showToast(`${symbol} 슬롯 제거 처리 중...`);
             try {
                 const res = await fetch('/api/slots/remove', {
                     method: 'POST',
                     headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ symbol: _removeTarget, sell_all: sellAll })
+                    body: JSON.stringify({ symbol, sell_all: sellAll })
                 });
                 const data = await res.json();
                 if (data.success) {
-                    if (_removeTarget === currentChartSymbol) {
+                    if (symbol === currentChartSymbol) {
                         currentChartSymbol = '';
                     }
                     showToast(data.message);
-                    fetchStatus();
+                    applyOptimisticSlotRemove(symbol);
+                    queueStatusRefresh(50);
                 } else {
                     showToast(data.message, true);
                 }
