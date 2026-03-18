@@ -120,14 +120,14 @@ def create_status_router(
 
         try:
             started_at: float = time.perf_counter()
-            bot_snapshot: Optional[Dict[str, Any]] = bot.get_live_snapshot(max_age_sec=6.0)
+            bot_snapshot: Optional[Dict[str, Any]] = bot.get_live_snapshot(max_age_sec=8.0)
             if bot_snapshot:
                 positions_list = list(bot_snapshot.get("positions", []))
                 now_kst = bot.get_korean_time()
                 now_et = bot.get_eastern_time()
                 is_daytime_session: bool = bot.is_daytime_market_open(now_kst)
-                snapshot_portfolio_ts: float = float(bot_snapshot.get("portfolio_ts", 0.0) or 0.0)
-                snapshot_age_sec: float = (now - snapshot_portfolio_ts) if snapshot_portfolio_ts > 0 else 999.0
+                snapshot_quote_ts: float = float(bot_snapshot.get("ts", 0.0) or 0.0)
+                snapshot_age_sec: float = (now - snapshot_quote_ts) if snapshot_quote_ts > 0 else 999.0
                 snapshot_stale_sec: float = snapshot_stale_sec_active if is_daytime_session else snapshot_stale_sec_idle
                 snapshot_is_stale: bool = snapshot_age_sec > snapshot_stale_sec
                 active_slots = bot.slot_manager.get_active_slots()
@@ -149,7 +149,7 @@ def create_status_router(
                     cached_ts = _get_cached_slot_ts(symbol, now)
                     if current_price > 0:
                         # 오래된 스냅샷이 최신 캐시 가격을 덮어쓰지 않도록 보호
-                        if cached_price > 0 and (snapshot_is_stale or (cached_ts > snapshot_portfolio_ts > 0)):
+                        if cached_price > 0 and (snapshot_is_stale or (cached_ts > snapshot_quote_ts > 0)):
                             position["current_price"] = cached_price
                             if snapshot_is_stale:
                                 stale_price_candidates.add(symbol)

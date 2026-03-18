@@ -297,7 +297,14 @@ class TradingBot:
         self._portfolio_sync_interval_sec: float = 5.0
         self._portfolio_sync_interval_idle_sec: float = 30.0
         self._snapshot_publish_interval_sec: float = 1.0
+        self._quote_refresh_interval_active_sec: float = 1.0
+        self._quote_refresh_interval_idle_sec: float = 3.0
+        self._quote_refresh_batch_size: int = 3
         self._last_portfolio_sync_ts: float = 0.0
+        self._last_quote_refresh_ts: float = 0.0
+        self._quote_rr_index: int = 0
+        self._slot_quote_cache: Dict[str, Dict[str, float]] = {}
+        self._slot_quote_cache_ttl_sec: float = 12.0
         self._live_snapshot_interval_sec: float = self._snapshot_publish_interval_sec
         self._empty_positions_streak: int = 0
         self._empty_positions_confirm_count: int = 3
@@ -1528,6 +1535,7 @@ class TradingBot:
         return self.last_usd_balance
 
     def _build_live_snapshot(self) -> Dict[str, Any]:
+        now_ts: float = time.time()
         active_slots = self.slot_manager.get_active_slots()
         slot_map: Dict[str, Dict[str, Any]] = {slot.get("symbol"): slot for slot in active_slots}
         current_symbols: List[str] = [str(slot.get("symbol", "")).upper() for slot in active_slots if slot.get("symbol")]
@@ -1554,11 +1562,14 @@ class TradingBot:
             qty: float = float(row.get("quantity", 0.0))
             avg_price: float = float(row.get("avg_price", 0.0))
             current_price: float = float(row.get("current_price", 0.0))
+            cached_price: float = self._get_slot_quote_cache(sym, now_ts=now_ts)
+            if cached_price > 0:
+                current_price = cached_price
             evlu_amt: float = max(qty * current_price, 0.0)
             pchs_amt: float = max(qty * avg_price, 0.0)
             evlu_pfls: float = evlu_amt - pchs_amt
             return_rate: float = float(row.get("return_rate", 0.0))
-            if avg_price > 0 and current_price > 0 and return_rate == 0.0:
+            if avg_price > 0 and current_price > 0:
                 return_rate = ((current_price - avg_price) / avg_price) * 100.0
 
             positions.append(
@@ -1588,7 +1599,7 @@ class TradingBot:
         tot_evlu_pfls: float = self.tot_evlu_pfls if self.tot_stck_evlu > 0 else calc_tot_pfls
 
         return {
-            "ts": time.time(),
+            "ts": now_ts,
             "portfolio_ts": float(self._last_portfolio_sync_ts or time.time()),
             "usd_balance": float(self.last_usd_balance),
             "krw_balance": float(self.last_krw_balance),
@@ -1605,6 +1616,64 @@ class TradingBot:
         with self._live_snapshot_lock:
             self._live_snapshot = snapshot
             self._last_live_snapshot_ts = float(snapshot.get("ts", time.time()))
+
+    def _set_slot_quote_cache(self, symbol: str, price: float, now_ts: Optional[float] = None) -> None:
+        sym: str = str(symbol or "").upper().strip()
+        if not sym or price <= 0:
+            return
+        ts: float = float(now_ts if now_ts is not None else time.time())
+        self._slot_quote_cache[sym] = {"price": float(price), "ts": ts}
+        if len(self._slot_quote_cache) > 128:
+            oldest: str = min(self._slot_quote_cache.keys(), key=lambda s: self._slot_quote_cache[s].get("ts", 0.0))
+            self._slot_quote_cache.pop(oldest, None)
+
+    def _get_slot_quote_cache(self, symbol: str, now_ts: Optional[float] = None) -> float:
+        sym: str = str(symbol or "").upper().strip()
+        if not sym:
+            return 0.0
+        cached = self._slot_quote_cache.get(sym)
+        if not cached:
+            return 0.0
+        now_val: float = float(now_ts if now_ts is not None else time.time())
+        ts: float = float(cached.get("ts", 0.0) or 0.0)
+        if (now_val - ts) > self._slot_quote_cache_ttl_sec:
+            return 0.0
+        return float(cached.get("price", 0.0) or 0.0)
+
+    def _refresh_slot_quotes(self, prefer_daytime: bool = False) -> None:
+        symbols: List[str] = [str(sym).upper() for sym in self.slot_manager.get_symbols(include_watch_only=True)]
+        if not symbols:
+            return
+
+        total: int = len(symbols)
+        batch: int = min(max(1, self._quote_refresh_batch_size), total)
+        start: int = self._quote_rr_index % total
+        targets: List[str] = [symbols[(start + i) % total] for i in range(batch)]
+        self._quote_rr_index = (start + batch) % total
+
+        updated_any: bool = False
+        now_ts: float = time.time()
+        for sym in targets:
+            try:
+                price: float = float(self.api.get_current_price(sym, prefer_daytime=prefer_daytime) or 0.0)
+            except Exception:
+                continue
+            if price <= 0:
+                continue
+            self._set_slot_quote_cache(sym, price, now_ts=now_ts)
+            if not self.positions.empty:
+                mask: pd.Series = self.positions["symbol"] == sym
+                if mask.any():
+                    self.positions.loc[mask, "current_price"] = price
+                    avg_price: float = float(self.positions.loc[mask, "avg_price"].values[0] or 0.0)
+                    if avg_price > 0:
+                        self.positions.loc[mask, "return_rate"] = ((price - avg_price) / avg_price) * 100.0
+            updated_any = True
+
+        if updated_any:
+            if not self.positions.empty:
+                self.positions.fillna(0.0, inplace=True)
+            self._publish_live_snapshot()
 
     def get_live_snapshot(self, max_age_sec: float = 12.0) -> Optional[Dict[str, Any]]:
         with self._live_snapshot_lock:
@@ -1706,6 +1775,7 @@ class TradingBot:
                     cur_price: float = pos.get("current_price", 0.0)
                     if cur_price > 0:
                         self.positions.loc[idx, 'current_price'] = cur_price
+                        self._set_slot_quote_cache(symbol, cur_price)
                     api_return: float = pos.get("return_rate", 0.0)
                     if api_return != 0.0:
                         self.positions.loc[idx, 'return_rate'] = api_return
@@ -2403,7 +2473,10 @@ class TradingBot:
                     now_ts: float = time.time()
                     sync_interval_sec: float = self._portfolio_sync_interval_sec
                     now_loop_et: datetime = self.get_eastern_time()
-                    if not (self.is_active_trading_time(now_loop_et) or self.is_daytime_market_open()):
+                    now_loop_kst: datetime = now_loop_et.astimezone(ZoneInfo("Asia/Seoul"))
+                    is_daytime_session: bool = self.is_daytime_market_open(now_loop_kst)
+                    is_trade_session: bool = self.is_active_trading_time(now_loop_et) or is_daytime_session
+                    if not is_trade_session:
                         sync_interval_sec = self._portfolio_sync_interval_idle_sec
                     if (now_ts - self._last_portfolio_sync_ts) >= sync_interval_sec:
                         try:
@@ -2411,6 +2484,13 @@ class TradingBot:
                             self._publish_live_snapshot()
                         except Exception as snapshot_error:
                             self.log(f"[포지션 동기화 오류] {snapshot_error}", send_tg=False)
+                    quote_interval_sec: float = self._quote_refresh_interval_active_sec if is_trade_session else self._quote_refresh_interval_idle_sec
+                    if (now_ts - self._last_quote_refresh_ts) >= quote_interval_sec:
+                        try:
+                            self._refresh_slot_quotes(prefer_daytime=is_daytime_session and (not self.is_active_trading_time(now_loop_et)))
+                            self._last_quote_refresh_ts = now_ts
+                        except Exception as quote_error:
+                            self.log(f"[시세 갱신 오류] {quote_error}", send_tg=False)
                     elif (now_ts - self._last_live_snapshot_ts) >= self._snapshot_publish_interval_sec:
                         try:
                             self._publish_live_snapshot()

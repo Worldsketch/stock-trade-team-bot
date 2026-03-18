@@ -242,32 +242,33 @@ def create_chart_router(
             return cached["data"]
 
         price = 0.0
-        source = "kis_quote"
+        source = "none"
         if bot:
-            if live_data_cache:
-                price = live_data_cache.get_price_from_portfolio(symbol, ttl_sec=1.0)
+            bot_snapshot = bot.get_live_snapshot(max_age_sec=8.0)
+            if bot_snapshot:
+                snapshot_ts = float(bot_snapshot.get("ts", 0.0) or 0.0)
+                snapshot_age = (now - snapshot_ts) if snapshot_ts > 0 else 999.0
+                for pos in bot_snapshot.get("positions", []) or []:
+                    if str(pos.get("symbol", "")).upper() != symbol.upper():
+                        continue
+                    try:
+                        snap_price = float(pos.get("current_price", 0.0) or 0.0)
+                    except Exception:
+                        snap_price = 0.0
+                    # 봇 시세 스냅샷(ts) 기준으로 신선도 판정
+                    if snap_price > 0 and snapshot_age <= 6.0:
+                        price = snap_price
+                        source = "bot_snapshot"
+                        break
+            if price <= 0 and live_data_cache:
+                price = live_data_cache.get_price_from_portfolio(symbol, ttl_sec=2.0)
                 if price > 0:
                     source = "shared_portfolio"
-            if price <= 0:
-                bot_snapshot = bot.get_live_snapshot(max_age_sec=4.0)
-                if bot_snapshot:
-                    portfolio_ts = float(bot_snapshot.get("portfolio_ts", 0.0) or 0.0)
-                    portfolio_age = (now - portfolio_ts) if portfolio_ts > 0 else 999.0
-                    for pos in bot_snapshot.get("positions", []) or []:
-                        if str(pos.get("symbol", "")).upper() != symbol.upper():
-                            continue
-                        try:
-                            snap_price = float(pos.get("current_price", 0.0) or 0.0)
-                        except Exception:
-                            snap_price = 0.0
-                        # 포지션 원본 동기화가 오래된 스냅샷은 현재가 소스로 사용하지 않음
-                        if snap_price > 0 and portfolio_age <= 2.0:
-                            price = snap_price
-                            source = "bot_snapshot"
-                            break
             try:
                 if price <= 0:
                     price = float(bot.api.get_current_price(symbol, prefer_daytime=(session == "daytime")))
+                    if price > 0:
+                        source = "kis_quote_fallback"
             except Exception:
                 price = 0.0
         result = {"symbol": symbol, "price": price, "session": session, "source": source, "ts": int(now)}
