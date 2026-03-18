@@ -450,7 +450,7 @@ class TradingBot:
         ath: float = 0.0
         now_et_ts: int = int(datetime.now(ZoneInfo("America/New_York")).timestamp())
         recent_cutoff_ts: int = now_et_ts - (1096 * 86400)  # 최근 3년
-        for period in ("10y", "5y", "2y"):
+        for period in ("5y", "3y", "2y", "1y"):
             try:
                 candles: List[Dict[str, Any]] = self.api.get_daily_candles(symbol, period=period)
             except Exception:
@@ -502,7 +502,7 @@ class TradingBot:
 
         now_ts: float = time.time()
         last_attempt: float = float(self._ath_backfill_last_attempt_ts.get(sym, 0.0) or 0.0)
-        if (now_ts - last_attempt) < self._ath_backfill_min_interval_sec:
+        if (now_ts - last_attempt) < self._ath_backfill_min_interval_sec and (not suspicious_ath):
             fallback = max(cur_ath, peak_price, float(price_hint or 0.0), float(slot_info.get("anchor_price", 0.0) or 0.0))
             return fallback
         self._ath_backfill_last_attempt_ts[sym] = now_ts
