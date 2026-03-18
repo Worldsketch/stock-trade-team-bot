@@ -448,6 +448,22 @@ class TradingBot:
             return float(cached.get("ath", 0.0) or 0.0)
 
         ath: float = 0.0
+        one_year_high: float = 0.0
+        try:
+            y1_candles: List[Dict[str, Any]] = self.api.get_daily_candles(symbol, period="1y")
+            y1_highs: List[float] = []
+            for candle in y1_candles:
+                h = float(candle.get("high", 0.0) or 0.0)
+                c = float(candle.get("close", 0.0) or 0.0)
+                if h > 0:
+                    y1_highs.append(h)
+                elif c > 0:
+                    y1_highs.append(c)
+            if y1_highs:
+                one_year_high = max(y1_highs)
+        except Exception:
+            one_year_high = 0.0
+
         now_et_ts: int = int(datetime.now(ZoneInfo("America/New_York")).timestamp())
         recent_cutoff_ts: int = now_et_ts - (1096 * 86400)  # 최근 3년
         for period in ("5y", "3y", "2y", "1y"):
@@ -476,10 +492,17 @@ class TradingBot:
             if highs:
                 raw_ath: float = max(highs)
                 recent_ath: float = max(recent_highs) if recent_highs else 0.0
-                # 장기 원본값에 분할/병합 왜곡이 있으면 최근 구간 최고가로 보정
-                if recent_ath > 0 and raw_ath > (recent_ath * 4.0):
-                    raw_ath = recent_ath
-                ath = max(ath, raw_ath)
+                normalized_ath: float = raw_ath
+                # 분할/병합 왜곡 보정: 최근 고점 대비 과도하면 recent_ath로 클램프
+                if recent_ath > 0 and normalized_ath > (recent_ath * 2.2):
+                    normalized_ath = recent_ath
+                # 추가 보정: 1년 고점 대비 과도하면 1년 고점으로 클램프
+                if one_year_high > 0 and normalized_ath > (one_year_high * 1.8):
+                    normalized_ath = one_year_high
+                # 안전망: 현재가격/변동성을 감안해도 비정상적으로 큰 값은 제거
+                if one_year_high > 0 and normalized_ath < one_year_high:
+                    normalized_ath = one_year_high
+                ath = max(ath, normalized_ath)
                 break
         self._ath_cache[symbol] = {"ath": float(ath), "ts": now_ts}
         return float(ath)
@@ -504,7 +527,11 @@ class TradingBot:
         peak_price: float = float(slot_info.get("peak_price", 0.0) or 0.0)
         anchor_price: float = float(slot_info.get("anchor_price", 0.0) or 0.0)
         source: str = str(slot_info.get("peak_source", "n/a") or "n/a").lower()
-        suspicious_ath: bool = anchor_price > 0 and cur_ath > (anchor_price * 8.0)
+        suspicious_ath: bool = False
+        if anchor_price > 0 and cur_ath > (anchor_price * 8.0):
+            suspicious_ath = True
+        if float(price_hint or 0.0) > 0 and cur_ath > (float(price_hint) * 2.2):
+            suspicious_ath = True
         if source == "ath" and cur_ath > 0 and peak_price > 0 and (not suspicious_ath):
             return max(cur_ath, peak_price)
 
