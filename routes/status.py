@@ -36,6 +36,8 @@ def create_status_router(
     router = APIRouter()
     slot_price_cache: Dict[str, Dict[str, float]] = {}
     slot_price_ttl_sec: float = 15.0
+    snapshot_stale_sec_active: float = 3.5
+    snapshot_stale_sec_idle: float = 10.0
     quote_rr_state: Dict[str, int] = {"idx": 0}
     quote_refresh_inflight: Set[str] = set()
     quote_refresh_last_ts: Dict[str, float] = {}
@@ -49,6 +51,15 @@ def create_status_router(
         if (now_ts - cached.get("ts", 0.0)) > slot_price_ttl_sec:
             return 0.0
         return float(cached.get("price", 0.0))
+
+    def _get_cached_slot_ts(symbol: str, now_ts: float) -> float:
+        cached = slot_price_cache.get(symbol)
+        if not cached:
+            return 0.0
+        ts = float(cached.get("ts", 0.0) or 0.0)
+        if (now_ts - ts) > slot_price_ttl_sec:
+            return 0.0
+        return ts
 
     def _set_cached_slot_price(symbol: str, price: float, now_ts: float) -> None:
         if price <= 0:
@@ -115,10 +126,15 @@ def create_status_router(
                 now_kst = bot.get_korean_time()
                 now_et = bot.get_eastern_time()
                 is_daytime_session: bool = bot.is_daytime_market_open(now_kst)
+                snapshot_portfolio_ts: float = float(bot_snapshot.get("portfolio_ts", 0.0) or 0.0)
+                snapshot_age_sec: float = (now - snapshot_portfolio_ts) if snapshot_portfolio_ts > 0 else 999.0
+                snapshot_stale_sec: float = snapshot_stale_sec_active if is_daytime_session else snapshot_stale_sec_idle
+                snapshot_is_stale: bool = snapshot_age_sec > snapshot_stale_sec
                 active_slots = bot.slot_manager.get_active_slots()
                 slot_map: Dict[str, Dict[str, Any]] = {slot.get("symbol"): slot for slot in active_slots}
                 existing_symbols = {str(p.get("symbol", "")).upper() for p in positions_list if p.get("symbol")}
                 quote_refresh_budget: int = 6
+                stale_price_candidates: Set[str] = set()
 
                 for position in positions_list:
                     symbol = str(position.get("symbol", "")).upper()
@@ -129,13 +145,25 @@ def create_status_router(
                     position["anchor_price"] = float(slot_info.get("anchor_price", position.get("anchor_price", 0.0)) or 0.0)
                     position["anchor_at"] = str(slot_info.get("anchor_at", position.get("anchor_at", "")))
                     current_price = float(position.get("current_price", 0.0) or 0.0)
-                    if current_price > 0:
-                        _set_cached_slot_price(symbol, current_price, now)
-                        continue
                     cached_price = _get_cached_slot_price(symbol, now)
+                    cached_ts = _get_cached_slot_ts(symbol, now)
+                    if current_price > 0:
+                        # 오래된 스냅샷이 최신 캐시 가격을 덮어쓰지 않도록 보호
+                        if cached_price > 0 and (snapshot_is_stale or (cached_ts > snapshot_portfolio_ts > 0)):
+                            position["current_price"] = cached_price
+                            if snapshot_is_stale:
+                                stale_price_candidates.add(symbol)
+                        else:
+                            _set_cached_slot_price(symbol, current_price, now)
+                            if snapshot_is_stale:
+                                stale_price_candidates.add(symbol)
+                        continue
                     if cached_price > 0:
                         position["current_price"] = cached_price
+                        if snapshot_is_stale:
+                            stale_price_candidates.add(symbol)
                         continue
+                    stale_price_candidates.add(symbol)
 
                 for slot in active_slots:
                     symbol = str(slot.get("symbol", "")).upper()
@@ -165,7 +193,11 @@ def create_status_router(
                     refresh_candidates = [
                         str(p.get("symbol", "")).upper()
                         for p in positions_list
-                        if float(p.get("current_price", 0.0) or 0.0) <= 0.0 and p.get("symbol")
+                        if p.get("symbol")
+                        and (
+                            float(p.get("current_price", 0.0) or 0.0) <= 0.0
+                            or str(p.get("symbol", "")).upper() in stale_price_candidates
+                        )
                     ]
                     for _ in range(min(quote_refresh_budget, len(refresh_candidates))):
                         target_symbol = _pick_round_robin_symbol(refresh_candidates)
