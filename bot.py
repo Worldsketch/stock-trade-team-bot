@@ -561,6 +561,24 @@ class TradingBot:
             )
         return ath
 
+    def _warm_slot_metadata_async(self, symbol: str, price_hint: float = 0.0, refresh_trend: bool = False) -> None:
+        sym: str = str(symbol or "").upper().strip()
+        if not sym:
+            return
+
+        def _worker() -> None:
+            try:
+                self._ensure_watch_slot_all_time_high(sym, price_hint=price_hint)
+            except Exception:
+                pass
+            if refresh_trend:
+                try:
+                    self._check_single_symbol_trend(sym)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _compute_sma200_rsi14(self, closes: List[float]) -> Optional[Tuple[float, float]]:
         if len(closes) < 200:
             return None
@@ -783,7 +801,8 @@ class TradingBot:
             return {"success": False, "message": f"{symbol} 거래소 조회 실패: {e}"}
 
         if watch_only:
-            all_time_high = max(self._get_kis_all_time_high(symbol), current_price)
+            # 응답 지연을 줄이기 위해 현재가는 즉시 반영하고 ATH는 백그라운드에서 보정
+            all_time_high = current_price
             ok = self.slot_manager.add_slot(
                 symbol,
                 base_asset,
@@ -797,7 +816,8 @@ class TradingBot:
             )
             if not ok:
                 return {"success": False, "message": f"{symbol} 슬롯 추가 실패"}
-            self.log(f"👀 [Watch Only] {symbol} 슬롯 추가 (기준가 ${current_price:.2f})", send_tg=True)
+            self._warm_slot_metadata_async(symbol, price_hint=current_price, refresh_trend=False)
+            self.log(f"👀 [Watch Only] {symbol} 슬롯 추가 (기준가 ${current_price:.2f})", send_tg=True, async_tg=True)
             return {
                 "success": True,
                 "message": f"{symbol} watch-only 슬롯 추가 완료",
@@ -818,7 +838,7 @@ class TradingBot:
             pass
 
         if already_held and buy_percent <= 0:
-            ath_seed: float = self._get_ath_seed_price(symbol, current_price)
+            ath_seed: float = current_price
             self.slot_manager.add_slot(
                 symbol,
                 base_asset,
@@ -835,11 +855,8 @@ class TradingBot:
             self.hwm[symbol] = current_price
             self._save_hwm()
             self._rebuild_positions_df()
-            try:
-                self._check_single_symbol_trend(symbol)
-            except Exception:
-                pass
-            self.log(f"✅ [슬롯 추가] {symbol} ({name}) — 기존 보유 종목 등록 (매수 없음)", send_tg=True)
+            self._warm_slot_metadata_async(symbol, price_hint=current_price, refresh_trend=True)
+            self.log(f"✅ [슬롯 추가] {symbol} ({name}) — 기존 보유 종목 등록 (매수 없음)", send_tg=True, async_tg=True)
             return {
                 "success": True,
                 "message": f"{symbol} 슬롯 추가 완료 (기존 보유 종목)",
@@ -888,7 +905,7 @@ class TradingBot:
             prefer_daytime=prefer_daytime,
         )
 
-        ath_seed: float = self._get_ath_seed_price(symbol, current_price)
+        ath_seed: float = current_price
         self.slot_manager.add_slot(
             symbol,
             base_asset,
@@ -905,14 +922,10 @@ class TradingBot:
         self.hwm[symbol] = 0.0
         self._save_hwm()
         self._rebuild_positions_df()
-
-        try:
-            self._check_single_symbol_trend(symbol)
-        except Exception:
-            pass
+        self._warm_slot_metadata_async(symbol, price_hint=current_price, refresh_trend=True)
 
         est_amount: float = buy_qty * buy_price
-        self.log(f"✅ [슬롯 추가] {symbol} ({name}) {buy_qty}주 매수 주문{pct_label} ≈ ${est_amount:,.0f}", send_tg=True)
+        self.log(f"✅ [슬롯 추가] {symbol} ({name}) {buy_qty}주 매수 주문{pct_label} ≈ ${est_amount:,.0f}", send_tg=True, async_tg=True)
         self._log_trade(symbol, "매수", buy_qty, buy_price, est_amount, f"[슬롯 추가] 초기 매수{pct_label}")
 
         return {
@@ -996,7 +1009,8 @@ class TradingBot:
         self._rebuild_positions_df()
 
         est_amount: float = buy_qty * buy_price
-        self.log(f"✅ [Watch Only 매수] {symbol} {buy_qty}주 {pct_label} ≈ ${est_amount:,.0f}", send_tg=True)
+        self._warm_slot_metadata_async(symbol, price_hint=current_price, refresh_trend=True)
+        self.log(f"✅ [Watch Only 매수] {symbol} {buy_qty}주 {pct_label} ≈ ${est_amount:,.0f}", send_tg=True, async_tg=True)
         self._log_trade(symbol, "매수", buy_qty, buy_price, est_amount, f"[Watch Only] 매수 전환 {pct_label}")
         return {
             "success": True,
@@ -1017,12 +1031,25 @@ class TradingBot:
 
         if sell_all:
             try:
-                data: Dict[str, Any] = self.api.get_balance_and_positions(symbols=self.symbols)
                 position: Optional[Dict[str, Any]] = None
-                for pos in data["positions"]:
-                    if pos["symbol"] == symbol and pos.get("quantity", 0) > 0:
-                        position = pos
-                        break
+                if not self.positions.empty:
+                    mask: pd.Series = self.positions["symbol"] == symbol
+                    if mask.any():
+                        qty_local: float = float(self.positions.loc[mask, "quantity"].values[0] or 0.0)
+                        if qty_local > 0:
+                            position = {
+                                "symbol": symbol,
+                                "quantity": qty_local,
+                                "current_price": float(self.positions.loc[mask, "current_price"].values[0] or 0.0),
+                                "avg_price": float(self.positions.loc[mask, "avg_price"].values[0] or 0.0),
+                            }
+
+                if position is None:
+                    data: Dict[str, Any] = self.api.get_balance_and_positions(symbols=self.symbols)
+                    for pos in data["positions"]:
+                        if pos["symbol"] == symbol and pos.get("quantity", 0) > 0:
+                            position = pos
+                            break
 
                 if position:
                     qty: int = int(position["quantity"])
@@ -1036,7 +1063,7 @@ class TradingBot:
                     order_ok: bool = self.api.place_order(symbol, qty, sell_price, is_buy=False, prefer_daytime=prefer_daytime)
                     if order_ok:
                         self._log_trade(symbol, "매도", qty, sell_price, qty * sell_price, "[슬롯 제거] 전량 매도", avg_price=pos_avg)
-                        self.log(f"📤 [슬롯 제거] {symbol} {qty}주 전량 매도 주문", send_tg=True)
+                        self.log(f"📤 [슬롯 제거] {symbol} {qty}주 전량 매도 주문", send_tg=True, async_tg=True)
                     else:
                         return {"success": False, "message": f"{symbol} 매도 주문 실패"}
             except Exception as e:
@@ -1053,7 +1080,7 @@ class TradingBot:
         self._rebuild_positions_df()
 
         action: str = "전량 매도 후 제거" if sell_all else "감시 중단"
-        self.log(f"🗑️ [슬롯 제거] {symbol} {action}", send_tg=True)
+        self.log(f"🗑️ [슬롯 제거] {symbol} {action}", send_tg=True, async_tg=True)
         return {"success": True, "message": f"{symbol} 슬롯 제거 완료 ({action})"}
 
     def _check_single_symbol_trend(self, symbol: str) -> None:
@@ -1304,6 +1331,9 @@ class TradingBot:
                 print(f"[텔레그램 전송 실패] {e} (시도 {attempt+1}/{max_retries})")
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
+
+    def _send_telegram_async(self, message: str) -> None:
+        threading.Thread(target=self.send_telegram_message, args=(message,), daemon=True).start()
 
     def send_error_telegram(self, message: str) -> None:
         """에러 메시지를 10분 쓰로틀링 적용하여 전송합니다."""
@@ -1697,7 +1727,7 @@ class TradingBot:
         except Exception as e:
             self.log(f"결산 전송 실패: {e}")
 
-    def log(self, message: str, send_tg: bool = False, print_stdout: bool = True) -> None:
+    def log(self, message: str, send_tg: bool = False, print_stdout: bool = True, async_tg: bool = False) -> None:
         if print_stdout:
             print(message)
         timestamp: str = datetime.now(ZoneInfo("Asia/Seoul")).strftime('%H:%M:%S')
@@ -1706,7 +1736,10 @@ class TradingBot:
             self.logs.pop()
             
         if send_tg:
-            self.send_telegram_message(message)
+            if async_tg:
+                self._send_telegram_async(message)
+            else:
+                self.send_telegram_message(message)
 
     def _calc_total_equity(self) -> float:
         """총 자산 계산 - KIS API tot_stck_evlu 우선, 폴백으로 로컬 계산"""
