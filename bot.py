@@ -87,6 +87,7 @@ class SlotManager:
                         slot['base_asset'] = str(slot.get('base_asset', symbol) or symbol).upper()
                         slot['watch_only'] = bool(slot.get('watch_only', False))
                         slot['anchor_price'] = float(slot.get('anchor_price', 0.0) or 0.0)
+                        slot['peak_price'] = float(slot.get('peak_price', slot.get('anchor_price', 0.0)) or 0.0)
                         slot['anchor_at'] = str(slot.get('anchor_at', slot.get('added_at', '')) or '')
                         slot['active'] = bool(slot.get('active', True))
                         # 레버리지 ETF는 본주 매핑을 강제 보정 (과거 저장 데이터 정합성 복구)
@@ -140,6 +141,7 @@ class SlotManager:
         is_leveraged: bool,
         watch_only: bool = False,
         anchor_price: float = 0.0,
+        peak_price: float = 0.0,
         anchor_at: str = "",
     ) -> bool:
         if self.is_full() or self.has_symbol(symbol):
@@ -151,6 +153,7 @@ class SlotManager:
             'added_at': now_iso,
             'anchor_at': anchor_at or now_iso,
             'anchor_price': float(anchor_price or 0.0),
+            'peak_price': float(peak_price or anchor_price or 0.0),
             'watch_only': bool(watch_only),
             'is_leveraged': is_leveraged,
             'active': True,
@@ -631,6 +634,7 @@ class TradingBot:
                 is_leveraged,
                 watch_only=True,
                 anchor_price=current_price,
+                peak_price=current_price,
                 anchor_at=datetime.now().isoformat(),
             )
             if not ok:
@@ -1586,6 +1590,7 @@ class TradingBot:
                     "base_asset": slot_info.get("base_asset", sym),
                     "watch_only": bool(slot_info.get("watch_only", False)),
                     "anchor_price": float(slot_info.get("anchor_price", 0.0) or 0.0),
+                    "peak_price": float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0),
                     "anchor_at": str(slot_info.get("anchor_at", "")),
                     "base_price": 0.0,
                 }
@@ -1661,6 +1666,12 @@ class TradingBot:
             if price <= 0:
                 continue
             self._set_slot_quote_cache(sym, price, now_ts=now_ts)
+            slot_info: Optional[Dict[str, Any]] = self.slot_manager.get_slot(sym)
+            if slot_info and bool(slot_info.get("watch_only", False)):
+                prev_peak: float = float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0)
+                if price > (prev_peak + 0.01):
+                    # 전고는 watch-only에서만 실시간 추적으로 갱신
+                    self.slot_manager.update_slot(sym, peak_price=price)
             if not self.positions.empty:
                 mask: pd.Series = self.positions["symbol"] == sym
                 if mask.any():

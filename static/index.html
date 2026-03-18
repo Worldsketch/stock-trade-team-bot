@@ -1417,8 +1417,9 @@
                                 <p data-field="base-asset" class="text-xs text-slate-500"></p>
                             </div>
                         </div>
-                        <div class="flex items-center">
+                        <div class="flex items-center gap-1.5">
                             <span data-field="ret-badge" class="px-2.5 py-1 rounded-lg text-sm font-semibold">0.00%</span>
+                            <span data-field="peak-badge" class="hidden px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-700 text-slate-400">전고 0.00%</span>
                         </div>
                     </div>
                     <div class="flex justify-between items-center mb-4">
@@ -1441,6 +1442,7 @@
         function updatePositionCard(card, pos, rate) {
             const watchOnly = pos.watch_only === true;
             const anchorPrice = Number(pos.anchor_price || 0);
+            const peakPriceRaw = Number(pos.peak_price || 0);
             const symbol = sanitizeSymbol(pos.symbol || '');
             const rawCurrentPrice = Number(pos.current_price || 0);
             if (watchOnly && symbol && rawCurrentPrice > 0) {
@@ -1449,7 +1451,9 @@
             const currentPrice = (watchOnly && rawCurrentPrice <= 0 && symbol && _lastWatchPriceBySymbol.has(symbol))
                 ? Number(_lastWatchPriceBySymbol.get(symbol) || 0)
                 : rawCurrentPrice;
+            const peakPrice = peakPriceRaw > 0 ? peakPriceRaw : Math.max(anchorPrice, currentPrice, 0);
             const watchRetRate = (anchorPrice > 0 && currentPrice > 0) ? ((currentPrice - anchorPrice) / anchorPrice * 100) : 0;
+            const peakRetRate = (peakPrice > 0 && currentPrice > 0) ? ((currentPrice - peakPrice) / peakPrice * 100) : 0;
             const retRate = watchOnly ? watchRetRate : Number(pos.return_rate || 0);
             const isPos = retRate > 0;
             const evalUsd = Number(pos.evlu_amt || (pos.quantity * pos.current_price) || 0);
@@ -1495,6 +1499,20 @@
             if (retBadgeEl) {
                 retBadgeEl.className = `px-2.5 py-1 rounded-lg text-sm font-semibold ${retBadgeBg}`;
                 retBadgeEl.textContent = `${rateSign}${retRate.toFixed(2)}%`;
+            }
+            const peakBadgeEl = card.querySelector('[data-field="peak-badge"]');
+            if (peakBadgeEl) {
+                if (watchOnly && peakPrice > 0 && currentPrice > 0) {
+                    const peakPos = peakRetRate > 0;
+                    const peakBadgeBg = peakPos
+                        ? 'bg-emerald-500/15 text-emerald-400'
+                        : (peakRetRate < 0 ? 'bg-rose-500/15 text-rose-400' : 'bg-slate-700 text-slate-400');
+                    peakBadgeEl.className = `px-2.5 py-1 rounded-lg text-xs font-semibold ${peakBadgeBg}`;
+                    peakBadgeEl.textContent = `전고 ${peakRetRate >= 0 ? '+' : ''}${peakRetRate.toFixed(2)}%`;
+                } else {
+                    peakBadgeEl.className = 'hidden px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-700 text-slate-400';
+                    peakBadgeEl.textContent = '전고 0.00%';
+                }
             }
             const mainLabelEl = card.querySelector('[data-field="main-label"]');
             if (mainLabelEl) mainLabelEl.textContent = watchOnly ? '현재가' : '평가금액';

@@ -143,6 +143,12 @@ def create_status_router(
                     slot_info = slot_map.get(symbol, {})
                     position["watch_only"] = bool(slot_info.get("watch_only", position.get("watch_only", False)))
                     position["anchor_price"] = float(slot_info.get("anchor_price", position.get("anchor_price", 0.0)) or 0.0)
+                    position["peak_price"] = float(
+                        slot_info.get(
+                            "peak_price",
+                            slot_info.get("anchor_price", position.get("peak_price", 0.0)),
+                        ) or 0.0
+                    )
                     position["anchor_at"] = str(slot_info.get("anchor_at", position.get("anchor_at", "")))
                     current_price = float(position.get("current_price", 0.0) or 0.0)
                     cached_price = _get_cached_slot_price(symbol, now)
@@ -184,6 +190,7 @@ def create_status_router(
                             "base_asset": slot.get("base_asset", symbol),
                             "watch_only": bool(slot.get("watch_only", False)),
                             "anchor_price": float(slot.get("anchor_price", 0.0) or 0.0),
+                            "peak_price": float(slot.get("peak_price", slot.get("anchor_price", 0.0)) or 0.0),
                             "anchor_at": str(slot.get("anchor_at", "")),
                             "base_price": 0.0,
                         }
@@ -311,6 +318,7 @@ def create_status_router(
                         "base_asset": base_symbol,
                         "watch_only": bool(slot_info.get("watch_only", False)),
                         "anchor_price": float(slot_info.get("anchor_price", 0.0) or 0.0),
+                        "peak_price": float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0),
                         "anchor_at": str(slot_info.get("anchor_at", "")),
                         # 본주 차트/실시간 표시를 사용하지 않아 상태 조회에서 별도 본주 시세 조회를 생략
                         "base_price": 0.0,
@@ -334,6 +342,7 @@ def create_status_router(
                         "base_asset": base_symbol,
                         "watch_only": bool(slot_info.get("watch_only", False)),
                         "anchor_price": float(slot_info.get("anchor_price", 0.0) or 0.0),
+                        "peak_price": float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0),
                         "anchor_at": str(slot_info.get("anchor_at", "")),
                         "base_price": 0.0,
                     }
