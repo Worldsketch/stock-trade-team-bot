@@ -87,9 +87,17 @@ class SlotManager:
                         slot['base_asset'] = str(slot.get('base_asset', symbol) or symbol).upper()
                         slot['watch_only'] = bool(slot.get('watch_only', False))
                         slot['anchor_price'] = float(slot.get('anchor_price', 0.0) or 0.0)
+                        if 'anchor_price' not in slot:
+                            changed = True
                         slot['peak_price'] = float(slot.get('peak_price', slot.get('anchor_price', 0.0)) or 0.0)
+                        if 'peak_price' not in slot:
+                            changed = True
                         slot['all_time_high'] = float(slot.get('all_time_high', slot.get('peak_price', 0.0)) or 0.0)
+                        if 'all_time_high' not in slot:
+                            changed = True
                         slot['peak_source'] = str(slot.get('peak_source', 'legacy' if slot['watch_only'] else 'n/a') or 'n/a')
+                        if 'peak_source' not in slot:
+                            changed = True
                         slot['anchor_at'] = str(slot.get('anchor_at', slot.get('added_at', '')) or '')
                         slot['active'] = bool(slot.get('active', True))
                         # 레버리지 ETF는 본주 매핑을 강제 보정 (과거 저장 데이터 정합성 복구)
@@ -1745,6 +1753,10 @@ class TradingBot:
         updated_any: bool = False
         now_ts: float = time.time()
         for sym in targets:
+            slot_info: Optional[Dict[str, Any]] = self.slot_manager.get_slot(sym)
+            if slot_info and bool(slot_info.get("watch_only", False)):
+                # 장외 등으로 현재가가 0이어도 역대 최고점 백필은 진행
+                _ = self._ensure_watch_slot_all_time_high(sym, price_hint=0.0)
             try:
                 price: float = float(self.api.get_current_price(sym, prefer_daytime=prefer_daytime) or 0.0)
             except Exception:
@@ -1752,7 +1764,7 @@ class TradingBot:
             if price <= 0:
                 continue
             self._set_slot_quote_cache(sym, price, now_ts=now_ts)
-            slot_info: Optional[Dict[str, Any]] = self.slot_manager.get_slot(sym)
+            slot_info = self.slot_manager.get_slot(sym)
             if slot_info and bool(slot_info.get("watch_only", False)):
                 _ = self._ensure_watch_slot_all_time_high(sym, price_hint=price)
                 slot_info = self.slot_manager.get_slot(sym) or slot_info
