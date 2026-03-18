@@ -450,7 +450,8 @@ class TradingBot:
         ath: float = 0.0
         one_year_high: float = 0.0
         try:
-            y1_candles: List[Dict[str, Any]] = self.api.get_daily_candles(symbol, period="1y")
+            # ATH 계산은 수정주가(분할/병합 반영) 기준으로 조회
+            y1_candles: List[Dict[str, Any]] = self.api.get_daily_candles(symbol, period="1y", adjusted=True)
             y1_highs: List[float] = []
             for candle in y1_candles:
                 h = float(candle.get("high", 0.0) or 0.0)
@@ -468,7 +469,7 @@ class TradingBot:
         recent_cutoff_ts: int = now_et_ts - (1096 * 86400)  # 최근 3년
         for period in ("5y", "3y", "2y", "1y"):
             try:
-                candles: List[Dict[str, Any]] = self.api.get_daily_candles(symbol, period=period)
+                candles: List[Dict[str, Any]] = self.api.get_daily_candles(symbol, period=period, adjusted=True)
             except Exception:
                 candles = []
             if not candles:
@@ -544,7 +545,8 @@ class TradingBot:
 
         ath: float = 0.0
         try:
-            ath = self._get_kis_all_time_high(sym)
+            # 의심값이면 캐시를 무시하고 재조회해 오래된 왜곡 ATH를 즉시 교정
+            ath = self._get_kis_all_time_high(sym, force_refresh=suspicious_ath)
         except Exception:
             ath = 0.0
         if ath <= 0:

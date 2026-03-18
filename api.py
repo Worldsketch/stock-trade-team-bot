@@ -838,7 +838,7 @@ class KoreaInvestmentAPI:
         return candles
 
     @retry_api(max_retries=2, delay_sec=0.2)
-    def get_daily_candles(self, symbol: str, period: str = "1y") -> List[Dict[str, Any]]:
+    def get_daily_candles(self, symbol: str, period: str = "1y", adjusted: bool = False) -> List[Dict[str, Any]]:
         """해외주식 일봉 조회 (KIS only)"""
         url: str = f"{self.base_url}/uapi/overseas-price/v1/quotations/dailyprice"
         headers: Dict[str, str] = self.get_headers("HHDFS76240000")
@@ -895,7 +895,8 @@ class KoreaInvestmentAPI:
                 "SYMB": symbol,
                 "GUBN": "0",
                 "BYMD": cursor_date.strftime("%Y%m%d"),
-                "MODP": "0",
+                # 0: 미반영, 1: 수정주가 반영(분할/병합 보정)
+                "MODP": "1" if adjusted else "0",
             }
             res = requests.get(url, headers=headers, params=params, timeout=(2.0, 5.0))
             res.raise_for_status()
