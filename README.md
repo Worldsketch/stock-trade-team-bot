@@ -158,10 +158,32 @@
 
 ## 최근 반영 (2026-03-18)
 
-- 레버리지 매핑 보정: `GGLL -> GOOG` 추가, 기존 슬롯 로드 시 `base_asset/is_leveraged` 자동 정합성 복구
-- Watch 카드 라벨/표시 개선: `watch-only` 표기를 `Watch`로 변경, 리프레시 중 0 가격 깜빡임 완화(마지막 유효 가격 유지)
-- 슬롯 추가 입력 UX 개선: 티커 입력창 우측 `X` 버튼 추가
-- 상태 조회 안정화: stale snapshot guard + 백그라운드 현재가 갱신으로 `/api/status` 스파이크 완화
+- 슬롯/카드
+  - Watch 슬롯 추가/삭제/매수전환 플로우 정리
+  - Watch 슬롯 가격 0 깜빡임 완화(마지막 유효 가격 유지)
+  - 슬롯 컬러를 심볼 기준 고정(순서 변경 시 색상 유지)
+  - 슬롯 드래그 정렬 + 서버 저장(`/api/slots/reorder`)
+  - 슬롯 추가 입력창 우측 `X` 버튼 추가
+- 최고점(ATH) 기능
+  - Watch 슬롯에 `all_time_high` 기반 최고점 추적 추가
+  - legacy Watch 슬롯 ATH 백필(장외 포함) + 분할 왜곡값 보정
+  - 최고점 계산 기준을 `5y -> 3y -> 2y -> 1y` 우선으로 정규화
+  - 카드 표시 개선: Watch/보유 슬롯 모두 `최고점 대비` 수익률 표시
+  - Watch 카드 보조라인에 `최고점 대비`/`추가가 대비` 동시 표시(+초록, -빨강)
+- 시세/상태 성능
+  - 상태 조회를 bot snapshot 우선 경로로 전환해 요청 시 KIS 직접조회 축소
+  - stale snapshot guard + slot price cache + round-robin refresh로 슬롯 가격 동기화 안정화
+  - `status/pending/chart/quote` 적응형 폴링(정상/위험/백그라운드) 적용
+- 거래/정산
+  - 수동 매도 로그/예상 금액 일관성 보정(주문가 기준)
+  - 수동 매도/트레일링 매도 추격형 재호가 단계 정교화
+  - 수수료/세금(`SELL_FEE_RATE`, `SELL_TAX_RATE`) 반영 정산 및 UI 표기 개선
+  - 슬롯 매수 비율 기준을 총자산이 아닌 예수금 기준으로 보정
+- 보안/운영
+  - 기본 인증 하드닝(기본 계정 의존 제거)
+  - 에러/민감정보 마스킹 강화
+  - 예약 배포(`deploy.py --schedule-restart`) 및 기존 예약 교체 동작 정리
+  - AI 리포트 서버 영속 저장(`runtime_data/ai_report.json`) 및 노출 안정화
 
 ## 설치 및 실행
 

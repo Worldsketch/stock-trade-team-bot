@@ -1477,9 +1477,7 @@
                 : (showKrw ? fmtKrw(plUsd * rate) : fmtUsd(plUsd));
             const rateSign = isPos ? '+' : '';
             const peakRateSign = peakRetRate >= 0 ? '+' : '';
-            const watchRateSign = watchRetRate >= 0 ? '+' : '';
             const peakRateColor = peakRetRate > 0 ? 'text-emerald-400' : (peakRetRate < 0 ? 'text-rose-400' : 'text-slate-400');
-            const watchRateColor = watchRetRate > 0 ? 'text-emerald-400' : (watchRetRate < 0 ? 'text-rose-400' : 'text-slate-400');
 
             card.className = `position-card bg-slate-850 rounded-xl p-5 border ${borderClass} ${glowClass} transition-all`;
             const iconEl = card.querySelector('[data-field="icon"]');
@@ -1493,13 +1491,8 @@
             }
             const baseEl = card.querySelector('[data-field="base-asset"]');
             if (baseEl) {
-                if (watchOnly) {
-                    const left = leverageText ? `${escapeHtml(leverageText)} · ` : '';
-                    baseEl.innerHTML = `${left}최고점 대비 <span class="${peakRateColor}">${peakRateSign}${peakRetRate.toFixed(1)}%</span> <span class="${watchRateColor}">${watchRateSign}${watchRetRate.toFixed(1)}%</span>`;
-                } else {
-                    const left = leverageText ? `${escapeHtml(leverageText)} · ` : '';
-                    baseEl.innerHTML = `${left}최고점 대비 <span class="${peakRateColor}">${peakRateSign}${peakRetRate.toFixed(1)}%</span>`;
-                }
+                const left = leverageText ? `${escapeHtml(leverageText)} · ` : '';
+                baseEl.innerHTML = `${left}최고점 대비 <span class="${peakRateColor}">${peakRateSign}${peakRetRate.toFixed(1)}%</span>`;
             }
             const retBadgeEl = card.querySelector('[data-field="ret-badge"]');
             if (retBadgeEl) {
@@ -1508,17 +1501,8 @@
             }
             const peakBadgeEl = card.querySelector('[data-field="peak-badge"]');
             if (peakBadgeEl) {
-                if (!watchOnly && peakPrice > 0 && currentPrice > 0) {
-                    const peakPos = peakRetRate > 0;
-                    const peakBadgeBg = peakPos
-                        ? 'bg-emerald-500/15 text-emerald-400'
-                        : (peakRetRate < 0 ? 'bg-rose-500/15 text-rose-400' : 'bg-slate-700 text-slate-400');
-                    peakBadgeEl.className = `px-2.5 py-1 rounded-lg text-sm font-semibold ${peakBadgeBg}`;
-                    peakBadgeEl.textContent = `최고점 ${peakRetRate >= 0 ? '+' : ''}${peakRetRate.toFixed(2)}%`;
-                } else {
-                    peakBadgeEl.className = 'hidden px-2.5 py-1 rounded-lg text-sm font-semibold bg-slate-700 text-slate-400';
-                    peakBadgeEl.textContent = '최고점 0.00%';
-                }
+                peakBadgeEl.className = 'hidden px-2.5 py-1 rounded-lg text-sm font-semibold bg-slate-700 text-slate-400';
+                peakBadgeEl.textContent = '최고점 0.00%';
             }
             const mainLabelEl = card.querySelector('[data-field="main-label"]');
             if (mainLabelEl) mainLabelEl.textContent = watchOnly ? '현재가' : '평가금액';

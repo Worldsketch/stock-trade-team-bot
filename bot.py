@@ -1680,6 +1680,13 @@ class TradingBot:
             cached_price: float = self._get_slot_quote_cache(sym, now_ts=now_ts)
             if cached_price > 0:
                 current_price = cached_price
+            hwm_price: float = float(self.hwm.get(sym, 0.0) or 0.0)
+            slot_peak: float = float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0)
+            slot_ath: float = float(slot_info.get("all_time_high", slot_peak) or slot_peak)
+            if not bool(slot_info.get("watch_only", False)):
+                if hwm_price > 0:
+                    slot_peak = max(slot_peak, hwm_price)
+                    slot_ath = max(slot_ath, hwm_price)
             evlu_amt: float = max(qty * current_price, 0.0)
             pchs_amt: float = max(qty * avg_price, 0.0)
             evlu_pfls: float = evlu_amt - pchs_amt
@@ -1701,8 +1708,8 @@ class TradingBot:
                     "base_asset": slot_info.get("base_asset", sym),
                     "watch_only": bool(slot_info.get("watch_only", False)),
                     "anchor_price": float(slot_info.get("anchor_price", 0.0) or 0.0),
-                    "peak_price": float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0),
-                    "all_time_high": float(slot_info.get("all_time_high", slot_info.get("peak_price", 0.0)) or 0.0),
+                    "peak_price": slot_peak,
+                    "all_time_high": slot_ath,
                     "anchor_at": str(slot_info.get("anchor_at", "")),
                     "base_price": 0.0,
                 }

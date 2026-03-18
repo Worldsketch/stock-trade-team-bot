@@ -74,6 +74,24 @@
 - `GGLL -> GOOG` 레버리지 매핑을 표준 맵에 추가
 - 기존 `slots.json` 로드 시 레버리지 슬롯의 `base_asset/is_leveraged` 자동 보정
 - 상태 조회에서 stale snapshot guard를 추가해 오래된 가격이 최신 값을 덮어쓰는 문제를 차단
+- `/api/status`는 bot snapshot 우선 + 요청 경로 비동기 quote refresh(예산/최소간격)로 KIS 동기 호출 스파이크를 완화
+- 슬롯 시세는 round-robin 배치 갱신(`batch=3`, active 1s / idle 3s)으로 6슬롯 실시간 체감과 유량 안정성을 동시 확보
+- `USD 예수금 0`/빈 포지션 순간 이상치 방어 로직을 유지해 API 일시 이상 시 기존 안전값 유지
+- Watch 슬롯 `all_time_high` 백필/보정 로직으로 분할 왜곡 ATH를 정규화하고 카드 지표 정확도 개선
+
+## 현재 유량/부하 기준 (코드 설정)
+- 프론트 폴링
+  - `status`: 2.5s (risk 6s / idle 15s)
+  - `pending`: 3s (risk 6s / idle 30s)
+  - `quote`: 1s (risk 2s / idle 5s)
+  - `chart`: 60s (risk/idle 120s)
+- 봇 내부 갱신
+  - 포트폴리오 동기화: 5s (idle 30s)
+  - 슬롯 시세: 1s 배치(최대 3종목), idle 3s
+- 보호 장치
+  - `status_cache` 2초
+  - `LiveDataCache` 포트폴리오 2~3초, 미체결 3초
+  - slot quote refresh 최소 간격 1.5초 + inflight 제어
 
 ## 확장 후보
 - 실패 코드별 재시도 정책 분기(즉시중단/재시도)
