@@ -484,18 +484,26 @@ class TradingBot:
         self._ath_cache[symbol] = {"ath": float(ath), "ts": now_ts}
         return float(ath)
 
+    def _get_ath_seed_price(self, symbol: str, fallback_price: float = 0.0) -> float:
+        base_price: float = float(fallback_price or 0.0)
+        try:
+            ath_price: float = float(self._get_kis_all_time_high(symbol) or 0.0)
+        except Exception:
+            ath_price = 0.0
+        return max(base_price, ath_price)
+
     def _ensure_watch_slot_all_time_high(self, symbol: str, price_hint: float = 0.0) -> float:
         sym: str = str(symbol or "").upper().strip()
         if not sym:
             return 0.0
         slot_info = self.slot_manager.get_slot(sym)
-        if not slot_info or not bool(slot_info.get("watch_only", False)):
+        if not slot_info:
             return 0.0
 
         cur_ath: float = float(slot_info.get("all_time_high", 0.0) or 0.0)
         peak_price: float = float(slot_info.get("peak_price", 0.0) or 0.0)
         anchor_price: float = float(slot_info.get("anchor_price", 0.0) or 0.0)
-        source: str = str(slot_info.get("peak_source", "legacy") or "legacy").lower()
+        source: str = str(slot_info.get("peak_source", "n/a") or "n/a").lower()
         suspicious_ath: bool = anchor_price > 0 and cur_ath > (anchor_price * 8.0)
         if source == "ath" and cur_ath > 0 and peak_price > 0 and (not suspicious_ath):
             return max(cur_ath, peak_price)
@@ -689,7 +697,17 @@ class TradingBot:
                     break
                 is_leveraged: bool = symbol in LEVERAGED_ETF_MAP
                 base_asset: str = LEVERAGED_ETF_MAP.get(symbol, symbol)
-                self.slot_manager.add_slot(symbol, base_asset, is_leveraged)
+                ath_seed: float = self._get_ath_seed_price(symbol, float(pos.get("current_price", 0.0) or 0.0))
+                self.slot_manager.add_slot(
+                    symbol,
+                    base_asset,
+                    is_leveraged,
+                    watch_only=False,
+                    anchor_price=0.0,
+                    peak_price=ath_seed,
+                    all_time_high=ath_seed,
+                    peak_source="ath",
+                )
                 self.is_uptrend[symbol] = False
                 self.is_rsi_oversold[symbol] = False
                 self.prev_close[symbol] = 0.0
@@ -771,7 +789,17 @@ class TradingBot:
             pass
 
         if already_held and buy_percent <= 0:
-            self.slot_manager.add_slot(symbol, base_asset, is_leveraged)
+            ath_seed: float = self._get_ath_seed_price(symbol, current_price)
+            self.slot_manager.add_slot(
+                symbol,
+                base_asset,
+                is_leveraged,
+                watch_only=False,
+                anchor_price=0.0,
+                peak_price=ath_seed,
+                all_time_high=ath_seed,
+                peak_source="ath",
+            )
             self.is_uptrend[symbol] = False
             self.is_rsi_oversold[symbol] = False
             self.prev_close[symbol] = 0.0
@@ -831,7 +859,17 @@ class TradingBot:
             prefer_daytime=prefer_daytime,
         )
 
-        self.slot_manager.add_slot(symbol, base_asset, is_leveraged)
+        ath_seed: float = self._get_ath_seed_price(symbol, current_price)
+        self.slot_manager.add_slot(
+            symbol,
+            base_asset,
+            is_leveraged,
+            watch_only=False,
+            anchor_price=0.0,
+            peak_price=ath_seed,
+            all_time_high=ath_seed,
+            peak_source="ath",
+        )
         self.is_uptrend[symbol] = False
         self.is_rsi_oversold[symbol] = False
         self.prev_close[symbol] = 0.0
@@ -1680,13 +1718,8 @@ class TradingBot:
             cached_price: float = self._get_slot_quote_cache(sym, now_ts=now_ts)
             if cached_price > 0:
                 current_price = cached_price
-            hwm_price: float = float(self.hwm.get(sym, 0.0) or 0.0)
             slot_peak: float = float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0)
             slot_ath: float = float(slot_info.get("all_time_high", slot_peak) or slot_peak)
-            if not bool(slot_info.get("watch_only", False)):
-                if hwm_price > 0:
-                    slot_peak = max(slot_peak, hwm_price)
-                    slot_ath = max(slot_ath, hwm_price)
             evlu_amt: float = max(qty * current_price, 0.0)
             pchs_amt: float = max(qty * avg_price, 0.0)
             evlu_pfls: float = evlu_amt - pchs_amt
@@ -1778,10 +1811,8 @@ class TradingBot:
         updated_any: bool = False
         now_ts: float = time.time()
         for sym in targets:
-            slot_info: Optional[Dict[str, Any]] = self.slot_manager.get_slot(sym)
-            if slot_info and bool(slot_info.get("watch_only", False)):
-                # 장외 등으로 현재가가 0이어도 역대 최고점 백필은 진행
-                _ = self._ensure_watch_slot_all_time_high(sym, price_hint=0.0)
+            # 장외 등으로 현재가가 0이어도 역대 최고점 백필은 진행 (관찰/보유 공통)
+            _ = self._ensure_watch_slot_all_time_high(sym, price_hint=0.0)
             try:
                 price: float = float(self.api.get_current_price(sym, prefer_daytime=prefer_daytime) or 0.0)
             except Exception:
@@ -1790,17 +1821,17 @@ class TradingBot:
                 continue
             self._set_slot_quote_cache(sym, price, now_ts=now_ts)
             slot_info = self.slot_manager.get_slot(sym)
-            if slot_info and bool(slot_info.get("watch_only", False)):
+            if slot_info:
                 _ = self._ensure_watch_slot_all_time_high(sym, price_hint=price)
                 slot_info = self.slot_manager.get_slot(sym) or slot_info
                 prev_peak: float = float(slot_info.get("peak_price", slot_info.get("all_time_high", 0.0)) or 0.0)
                 prev_ath: float = float(slot_info.get("all_time_high", prev_peak) or prev_peak)
-                if price > (prev_peak + 0.01):
-                    # 역대 최고점 돌파 시 최고점 값을 동시 갱신
+                if price > (prev_ath + 0.01):
+                    # ATH 돌파 시 최고점 값을 즉시 갱신 (관찰/보유 공통)
                     self.slot_manager.update_slot(
                         sym,
-                        peak_price=price,
-                        all_time_high=max(prev_ath, price),
+                        peak_price=max(prev_peak, price),
+                        all_time_high=price,
                         peak_source="ath",
                     )
             if not self.positions.empty:

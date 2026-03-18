@@ -142,7 +142,6 @@ def create_status_router(
                         continue
                     slot_info = slot_map.get(symbol, {})
                     watch_only = bool(slot_info.get("watch_only", position.get("watch_only", False)))
-                    hwm_price = float(getattr(bot, "hwm", {}).get(symbol, 0.0) or 0.0)
                     anchor_price = float(slot_info.get("anchor_price", position.get("anchor_price", 0.0)) or 0.0)
                     peak_price = float(
                         slot_info.get(
@@ -156,9 +155,6 @@ def create_status_router(
                             slot_info.get("peak_price", position.get("all_time_high", 0.0)),
                         ) or 0.0
                     )
-                    if (not watch_only) and hwm_price > 0:
-                        peak_price = max(peak_price, hwm_price)
-                        all_time_high = max(all_time_high, hwm_price)
                     position["watch_only"] = watch_only
                     position["anchor_price"] = anchor_price
                     position["peak_price"] = peak_price
@@ -191,12 +187,8 @@ def create_status_router(
                         continue
                     fallback_price: float = _get_cached_slot_price(symbol, now)
                     watch_only = bool(slot.get("watch_only", False))
-                    hwm_price = float(getattr(bot, "hwm", {}).get(symbol, 0.0) or 0.0)
                     peak_price = float(slot.get("peak_price", slot.get("anchor_price", 0.0)) or 0.0)
                     all_time_high = float(slot.get("all_time_high", peak_price) or peak_price)
-                    if (not watch_only) and hwm_price > 0:
-                        peak_price = max(peak_price, hwm_price)
-                        all_time_high = max(all_time_high, hwm_price)
                     if fallback_price <= 0 and quote_refresh_budget > 0:
                         if _schedule_slot_price_refresh(bot, symbol, is_daytime_session):
                             quote_refresh_budget -= 1
@@ -326,12 +318,8 @@ def create_status_router(
                         current_price = cached_price
                 slot_info = slot_map.get(symbol, {})
                 watch_only = bool(slot_info.get("watch_only", False))
-                hwm_price = float(getattr(bot, "hwm", {}).get(symbol, 0.0) or 0.0)
                 peak_price = float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0)
                 all_time_high = float(slot_info.get("all_time_high", peak_price) or peak_price)
-                if (not watch_only) and hwm_price > 0:
-                    peak_price = max(peak_price, hwm_price)
-                    all_time_high = max(all_time_high, hwm_price)
                 base_symbol: str = slot_info.get("base_asset", symbol)
                 positions_list.append(
                     {
@@ -361,12 +349,8 @@ def create_status_router(
                 slot_info = slot_map.get(symbol, {})
                 fallback_price: float = _get_cached_slot_price(symbol, now)
                 watch_only = bool(slot_info.get("watch_only", False))
-                hwm_price = float(getattr(bot, "hwm", {}).get(symbol, 0.0) or 0.0)
                 peak_price = float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0)
                 all_time_high = float(slot_info.get("all_time_high", peak_price) or peak_price)
-                if (not watch_only) and hwm_price > 0:
-                    peak_price = max(peak_price, hwm_price)
-                    all_time_high = max(all_time_high, hwm_price)
                 base_symbol = slot_info.get("base_asset", symbol)
                 positions_list.append(
                     {
