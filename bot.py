@@ -2121,7 +2121,13 @@ class TradingBot:
                 continue
             cur: float = float(self.positions.loc[mask, 'current_price'].values[0])
             if cur <= 0:
-                self.positions.loc[mask, 'current_price'] = self.api.get_current_price(sym)
+                try:
+                    fetched_price: float = float(self.api.get_current_price(sym) or 0.0)
+                except Exception as quote_error:
+                    self.log(f"[현재가 조회 오류] {sym}: {quote_error}", send_tg=False)
+                    continue
+                if fetched_price > 0:
+                    self.positions.loc[mask, 'current_price'] = fetched_price
         
         need_calc: pd.Series = (self.positions['avg_price'] > 0) & (self.positions['return_rate'] == 0.0)
         if need_calc.any():
