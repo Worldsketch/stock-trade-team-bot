@@ -342,9 +342,16 @@ class TradingBot:
         # 에러 알림 쓰로틀링 (10분)
         self._error_throttle: Dict[str, float] = {}
         self._error_throttle_seconds: float = 600.0
-        # API 이상 경고 로그 쓰로틀링 (1분)
+        # API 이상 경고 로그 쓰로틀링 (기본 5분)
         self._api_warn_last_ts: Dict[str, float] = {}
-        self._api_warn_interval_sec: float = 60.0
+        self._api_warn_interval_sec: float = 300.0
+        self._api_warn_interval_by_key: Dict[str, float] = {
+            "usd_zero_balance": 300.0,
+            "stock_eval_zero": 300.0,
+            "positions_empty_transient": 180.0,
+            "auto_remove_guard_empty_verify": 300.0,
+            "auto_remove_guard_verify_error": 300.0,
+        }
 
         # 일별 자산 추적
         self.equity_log_file: str = "equity_log.json"
@@ -1348,7 +1355,8 @@ class TradingBot:
     def _log_api_warning_throttled(self, key: str, message: str) -> None:
         now: float = time.time()
         last_ts: float = self._api_warn_last_ts.get(key, 0.0)
-        if now - last_ts < self._api_warn_interval_sec:
+        interval_sec: float = float(self._api_warn_interval_by_key.get(key, self._api_warn_interval_sec) or self._api_warn_interval_sec)
+        if now - last_ts < interval_sec:
             return
         self._api_warn_last_ts[key] = now
         self.log(message, send_tg=False)
@@ -2065,7 +2073,10 @@ class TradingBot:
                     if float(pos.get("quantity", 0.0) or 0.0) > 0
                 }
                 if (not account_held_symbols) and self.tot_stck_evlu > 100:
-                    self.log("⚠️ [자동 정리 보류] 전체계좌 재확인 결과가 비정상(보유 0)으로 보여 삭제를 건너뜁니다.", send_tg=False)
+                    self._log_api_warning_throttled(
+                        "auto_remove_guard_empty_verify",
+                        "⚠️ [자동 정리 보류] 전체계좌 재확인 결과가 비정상(보유 0)으로 보여 삭제를 건너뜁니다.",
+                    )
                     return
                 filtered_remove: List[str] = []
                 for sym in to_remove:
@@ -2075,7 +2086,10 @@ class TradingBot:
                     filtered_remove.append(sym)
                 to_remove = filtered_remove
             except Exception as verify_error:
-                self.log(f"⚠️ [자동 정리 보류] 전체계좌 재확인 실패: {verify_error}", send_tg=False)
+                self._log_api_warning_throttled(
+                    "auto_remove_guard_verify_error",
+                    f"⚠️ [자동 정리 보류] 전체계좌 재확인 실패: {verify_error}",
+                )
                 return
 
         for sym in to_remove:
