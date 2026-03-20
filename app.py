@@ -50,6 +50,10 @@ def _get_ai_report_file_path() -> str:
 AI_REPORT_FILE: str = _get_ai_report_file_path()
 
 
+def _is_ai_report_enabled() -> bool:
+    return bool(os.getenv("GEMINI_API_KEY", "").strip())
+
+
 def _ensure_ai_report_storage() -> None:
     os.makedirs(RUNTIME_DIR, exist_ok=True)
     if AI_REPORT_FILE == LEGACY_AI_REPORT_FILE:
@@ -210,6 +214,7 @@ app.include_router(
         auth_dependency=get_current_username,
         generate_ai_report=lambda: _generate_ai_report(),
         ai_report_file=AI_REPORT_FILE,
+        is_ai_enabled=lambda: _is_ai_report_enabled(),
     )
 )
 
@@ -323,7 +328,11 @@ def _generate_ai_report() -> Dict[str, Any]:
 
     gemini_key: str = os.getenv("GEMINI_API_KEY", "")
     if not gemini_key:
-        return {"error": "GEMINI_API_KEY not set"}
+        return {
+            "error": "AI 시장 분석 기능이 비활성화되어 있습니다.",
+            "disabled": True,
+            "reason": "GEMINI_API_KEY not set",
+        }
 
     analyze_symbols: List[str] = []
     slot_to_base: Dict[str, str] = {}
@@ -555,6 +564,9 @@ def _auto_generate_report() -> None:
     reported_sessions: set = set()
     while True:
         try:
+            if not _is_ai_report_enabled():
+                _time.sleep(300)
+                continue
             now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
             now_et = now_kst.astimezone(ZoneInfo("America/New_York"))
             et_date: str = now_et.strftime("%Y-%m-%d")

@@ -2634,9 +2634,19 @@
         function renderAiReport(data) {
             const container = document.getElementById('aiReportContainer');
             const timeEl = document.getElementById('aiReportTime');
+            const isEnabled = data.enabled !== false;
+            const baseMessage = data.message || '리포트가 없습니다.';
+            if (!isEnabled && !data.report) {
+                container.innerHTML = '<p class="text-center text-slate-500 py-6 text-sm">AI 시장 분석 기능이 현재 비활성화되어 있습니다.</p>';
+                timeEl.textContent = '';
+                return;
+            }
             if (data.report) {
                 const lines = data.report.split('\n');
                 let html = '<div class="space-y-2 text-sm leading-relaxed">';
+                if (!isEnabled) {
+                    html += '<div class="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">AI 시장 분석 기능은 현재 비활성화되어 있으며, 아래 내용은 마지막 저장 리포트입니다.</div>';
+                }
                 let isFirst = true;
                 lines.forEach(line => {
                     const trimmed = line.trim();
@@ -2660,7 +2670,8 @@
                 container.innerHTML = html;
                 timeEl.textContent = data.generated_at || '';
             } else {
-                container.innerHTML = '<p class="text-center text-slate-500 py-6 text-sm">리포트가 없습니다. 매일 프리장 시작(ET 04:00)과 본장 시작(ET 09:30)에 자동 생성됩니다.</p>';
+                container.innerHTML = `<p class="text-center text-slate-500 py-6 text-sm">${baseMessage}</p>`;
+                timeEl.textContent = '';
             }
         }
 
