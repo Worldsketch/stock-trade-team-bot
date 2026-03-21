@@ -59,6 +59,26 @@ def _parse_env_rate(name: str, default: float = 0.0) -> float:
         return max(0.0, default)
 
 
+def _parse_env_float_list(name: str, default: List[float]) -> List[float]:
+    raw: str = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return list(default)
+    values: List[float] = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            value = float(token)
+        except Exception:
+            continue
+        if value > 0:
+            values.append(value)
+    if not values:
+        return list(default)
+    return sorted(set(values))
+
+
 class SlotManager:
     """최대 6개 슬롯의 동적 종목 관리를 담당합니다."""
 
@@ -365,6 +385,11 @@ class TradingBot:
         # 예수금 비중 알림 (하루 1번)
         self._cash_alert_40_sent: str = ""
         self._cash_alert_30_sent: str = ""
+        self._profit_alert_levels: List[float] = _parse_env_float_list(
+            "PROFIT_ALERT_LEVELS",
+            [20.0, 30.0, 45.0],
+        )
+        self._profit_alert_state: Dict[str, Dict[str, Any]] = {}
 
         self._nyse_cal = xcals.get_calendar("XNYS")
 
@@ -2109,6 +2134,7 @@ class TradingBot:
     def fetch_market_data(self) -> None:
         self.sync_positions()
         if self.positions.empty:
+            self._profit_alert_state.clear()
             self._publish_live_snapshot()
             if not self._sync_logged:
                 self.log(f"데이터 동기화 완료 | 예수금: ${self.last_usd_balance:.2f} (슬롯 없음)", print_stdout=False)
@@ -2165,11 +2191,22 @@ class TradingBot:
                 continue
             price: float = float(self.positions.loc[mask_sym, 'current_price'].values[0])
             qty: float = float(self.positions.loc[mask_sym, 'quantity'].values[0])
+            avg_price: float = float(self.positions.loc[mask_sym, 'avg_price'].values[0])
+            return_rate: float = float(self.positions.loc[mask_sym, 'return_rate'].values[0])
             
             if qty > 0 and price > 0:
+                self._check_profit_target_alert(symbol, price, qty, avg_price, return_rate)
                 self.update_hwm(symbol, price)
                 if self.is_regular_market_open(now_et):
                     self.check_trailing_stop(symbol, price, qty)
+            else:
+                self._profit_alert_state.pop(symbol, None)
+
+        # 슬롯 제거된 심볼의 알림 상태 정리
+        active_symbols: Set[str] = set(self.symbols)
+        stale_symbols: List[str] = [sym for sym in self._profit_alert_state.keys() if sym not in active_symbols]
+        for stale_symbol in stale_symbols:
+            self._profit_alert_state.pop(stale_symbol, None)
         
     def check_trailing_stop(self, symbol: str, current_price: float, qty: float) -> None:
         """Strategy E: HWM 하락 임계치 도달 시 부분 매도(추격형 지정가)"""
@@ -2230,6 +2267,62 @@ class TradingBot:
         if self.strategy_mode == "auto":
             return f"자동({'공격' if self.auto_active_mode == 'aggressive' else '방어'})"
         return "공격" if self.strategy_mode == "aggressive" else "방어"
+
+    def _check_profit_target_alert(
+        self,
+        symbol: str,
+        current_price: float,
+        qty: float,
+        avg_price: float,
+        return_rate: float,
+    ) -> None:
+        """수익률 구간(+20/+30/+45%) 도달 시 심볼별 1회 알림."""
+        if not self._profit_alert_levels:
+            return
+        if qty <= 0 or avg_price <= 0 or current_price <= 0:
+            self._profit_alert_state.pop(symbol, None)
+            return
+
+        state: Optional[Dict[str, Any]] = self._profit_alert_state.get(symbol)
+        if state is None:
+            # 최초 진입 시 이미 지나간 구간은 발송 완료 처리
+            self._profit_alert_state[symbol] = {
+                "last_qty": qty,
+                "last_avg": avg_price,
+                "hit": [lv for lv in self._profit_alert_levels if return_rate >= lv],
+            }
+            return
+
+        last_qty: float = float(state.get("last_qty", qty) or qty)
+        last_avg: float = float(state.get("last_avg", avg_price) or avg_price)
+        hit_levels: Set[float] = set(float(v) for v in state.get("hit", []))
+
+        # 추가 매수(수량 증가 + 평단 유의미 변동) 시 알림 상태 재평가
+        qty_increased: bool = qty > (last_qty + max(1e-6, last_qty * 0.001))
+        avg_changed: bool = abs(avg_price - last_avg) > max(0.01, last_avg * 0.003)
+        if qty_increased and avg_changed:
+            hit_levels = set(lv for lv in self._profit_alert_levels if return_rate >= lv)
+
+        for level in self._profit_alert_levels:
+            if return_rate < level or level in hit_levels:
+                continue
+            eval_amount: float = qty * current_price
+            msg: str = (
+                f"🎯 [수익률 도달 알림]\n"
+                f"종목: {symbol}\n"
+                f"현재 수익률: {return_rate:+.2f}% (목표 +{level:.1f}% 도달)\n"
+                f"현재가/평단: ${current_price:.2f} / ${avg_price:.2f}\n"
+                f"보유수량: {int(qty)}주\n"
+                f"평가금액: ${eval_amount:,.2f} (약 {eval_amount * self.exchange_rate:,.0f}원)"
+            )
+            self.send_telegram_message(msg)
+            hit_levels.add(level)
+
+        self._profit_alert_state[symbol] = {
+            "last_qty": qty,
+            "last_avg": avg_price,
+            "hit": sorted(hit_levels),
+        }
 
     def _pick_pending_order(self, orders: List[Dict[str, Any]], symbol: str, side: str) -> Optional[Dict[str, Any]]:
         candidates: List[Dict[str, Any]] = []
