@@ -2,7 +2,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends
 
 from bot import TradingBot
 from services.live_data_cache import LiveDataCache
@@ -25,6 +25,13 @@ def create_trading_router(
     live_data_cache: Optional[LiveDataCache] = None,
 ) -> APIRouter:
     router = APIRouter()
+
+    def _order_window_error(bot: TradingBot) -> Optional[str]:
+        now_et = bot.get_eastern_time()
+        now_kst = bot.get_korean_time()
+        if bot.is_active_trading_time(now_et) or bot.is_daytime_market_open(now_kst):
+            return None
+        return "거래 가능 시간에만 주문할 수 있습니다. (미국장 ET 04:00~20:00 / 데이장 KST 09:00~16:00)"
 
     def _pick_pending_sell_order(orders: List[Dict[str, Any]], symbol: str) -> Optional[Dict[str, Any]]:
         candidates: List[Dict[str, Any]] = []
@@ -215,13 +222,13 @@ def create_trading_router(
         thread.start()
 
     @router.post("/api/sell")
-    async def manual_sell(request: Request, username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def manual_sell(body: Optional[Dict[str, Any]] = Body(default=None), username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"success": False, "message": "봇이 초기화되지 않았습니다."}
 
         try:
-            body: Dict[str, Any] = await request.json()
+            body = body or {}
             symbol: str = body.get("symbol", "")
             percent: int = int(body.get("percent", 0))
         except Exception:
@@ -231,6 +238,9 @@ def create_trading_router(
             return {"success": False, "message": f"슬롯에 등록되지 않은 종목: {symbol}"}
         if percent not in (10, 25, 50, 100):
             return {"success": False, "message": f"잘못된 매도 비율: {percent}%"}
+        order_window_error = _order_window_error(bot)
+        if order_window_error:
+            return {"success": False, "message": order_window_error}
 
         try:
             data: Optional[Dict[str, Any]] = None
@@ -353,12 +363,12 @@ def create_trading_router(
             return {"orders": [], "error": str(error)}
 
     @router.post("/api/cancel-order")
-    async def cancel_order(request: Request, username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def cancel_order(body: Optional[Dict[str, Any]] = Body(default=None), username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"success": False, "message": "봇이 초기화되지 않았습니다."}
         try:
-            body: Dict[str, Any] = await request.json()
+            body = body or {}
             order_no: str = body.get("order_no", "")
             symbol: str = body.get("symbol", "")
             remaining_qty: int = int(body.get("remaining_qty", 0))

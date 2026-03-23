@@ -811,9 +811,8 @@ class TradingBot:
             return {"success": False, "message": "종목 코드는 영문/숫자/.- 만 허용됩니다. (최대 15자)"}
         now_et: datetime = datetime.now(ZoneInfo("America/New_York"))
         now_kst: datetime = now_et.astimezone(ZoneInfo("Asia/Seoul"))
-        is_us_session: bool = self.is_active_trading_time(now_et)
-        is_daytime_session: bool = self.is_daytime_market_open(now_kst)
-        if not (is_us_session or is_daytime_session):
+        is_trade_session, prefer_daytime = self.get_order_window_flags(now_et=now_et, now_kst=now_kst)
+        if not is_trade_session:
             return {"success": False, "message": "거래 가능 시간에만 종목을 추가할 수 있습니다. (미국장 ET 04:00~20:00 / 데이장 KST 09:00~16:00)"}
         if self.slot_manager.is_full():
             return {"success": False, "message": f"슬롯이 가득 찼습니다. (최대 {self.slot_manager.max_slots}개)"}
@@ -921,7 +920,6 @@ class TradingBot:
                         }
             except Exception as e:
                 return {"success": False, "message": f"매수 수량 계산 실패: {e}"}
-        prefer_daytime: bool = is_daytime_session and (not is_us_session)
         success: bool = self.api.place_order(symbol, buy_qty, buy_price, is_buy=True, prefer_daytime=prefer_daytime)
         if not success:
             return {"success": False, "message": f"{symbol} {buy_qty}주 매수 주문 실패"}
@@ -983,9 +981,8 @@ class TradingBot:
 
         now_et: datetime = datetime.now(ZoneInfo("America/New_York"))
         now_kst: datetime = now_et.astimezone(ZoneInfo("Asia/Seoul"))
-        is_us_session: bool = self.is_active_trading_time(now_et)
-        is_daytime_session: bool = self.is_daytime_market_open(now_kst)
-        if not (is_us_session or is_daytime_session):
+        is_trade_session, prefer_daytime = self.get_order_window_flags(now_et=now_et, now_kst=now_kst)
+        if not is_trade_session:
             return {"success": False, "message": "거래 가능 시간에만 매수할 수 있습니다."}
 
         try:
@@ -1017,7 +1014,6 @@ class TradingBot:
         except Exception as e:
             return {"success": False, "message": f"매수 수량 계산 실패: {e}"}
 
-        prefer_daytime: bool = is_daytime_session and (not is_us_session)
         success: bool = self.api.place_order(symbol, buy_qty, buy_price, is_buy=True, prefer_daytime=prefer_daytime)
         if not success:
             return {"success": False, "message": f"{symbol} {buy_qty}주 매수 주문 실패"}
@@ -1090,8 +1086,11 @@ class TradingBot:
                         price = self.api.get_current_price(symbol)
                     sell_price: float = round(price * 0.99, 2)
                     pos_avg: float = position.get("avg_price", 0.0)
+                    now_et: datetime = self.get_eastern_time()
                     now_kst: datetime = self.get_korean_time()
-                    prefer_daytime: bool = self.is_daytime_market_open(now_kst)
+                    is_trade_session, prefer_daytime = self.get_order_window_flags(now_et=now_et, now_kst=now_kst)
+                    if not is_trade_session:
+                        return {"success": False, "message": "거래 가능 시간에만 매도할 수 있습니다."}
                     order_ok: bool = self.api.place_order(symbol, qty, sell_price, is_buy=False, prefer_daytime=prefer_daytime)
                     if order_ok:
                         self._log_trade(symbol, "매도", qty, sell_price, qty * sell_price, "[슬롯 제거] 전량 매도", avg_price=pos_avg)
@@ -1309,6 +1308,21 @@ class TradingBot:
 
     def get_korean_time(self) -> datetime:
         return datetime.now(ZoneInfo("Asia/Seoul"))
+
+    def get_order_window_flags(
+        self,
+        now_et: Optional[datetime] = None,
+        now_kst: Optional[datetime] = None,
+    ) -> Tuple[bool, bool]:
+        if now_et is None:
+            now_et = self.get_eastern_time()
+        if now_kst is None:
+            now_kst = now_et.astimezone(ZoneInfo("Asia/Seoul"))
+        is_us_session: bool = self.is_active_trading_time(now_et)
+        is_daytime_session: bool = self.is_daytime_market_open(now_kst)
+        is_trade_session: bool = is_us_session or is_daytime_session
+        prefer_daytime: bool = is_daytime_session and (not is_us_session)
+        return is_trade_session, prefer_daytime
 
     def is_regular_market_open(self, now_et: datetime) -> bool:
         if now_et.weekday() >= 5 or self.is_us_market_holiday(now_et):

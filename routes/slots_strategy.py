@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends
 
 from bot import LEVERAGED_ETF_MAP, TradingBot
 
@@ -159,7 +159,7 @@ def create_slots_strategy_router(
         return file_items, file_by_symbol
 
     @router.get("/api/strategy-mode")
-    async def get_strategy_mode(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def get_strategy_mode(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"error": "봇이 초기화되지 않았습니다."}
@@ -173,18 +173,18 @@ def create_slots_strategy_router(
         }
 
     @router.post("/api/strategy-mode")
-    async def set_strategy_mode(request: Request, username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def set_strategy_mode(body: Optional[Dict[str, Any]] = Body(default=None), username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"error": "봇이 초기화되지 않았습니다."}
-        body: Dict[str, Any] = await request.json()
+        body = body or {}
         mode: str = body.get("mode", "")
         if bot.set_strategy_mode(mode):
             return {"status": "ok", "mode": mode, "auto_active": bot.auto_active_mode}
         return {"error": f"유효하지 않은 모드: {mode}"}
 
     @router.get("/api/slots")
-    async def get_slots(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def get_slots(username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"slots": [], "max_slots": 6}
@@ -195,12 +195,12 @@ def create_slots_strategy_router(
         }
 
     @router.post("/api/slots/add")
-    async def add_slot(request: Request, username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def add_slot(body: Optional[Dict[str, Any]] = Body(default=None), username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"success": False, "message": "봇이 초기화되지 않았습니다."}
         try:
-            body: Dict[str, Any] = await request.json()
+            body = body or {}
             symbol: str = body.get("symbol", "").strip().upper()
         except Exception:
             return {"success": False, "message": "잘못된 요청입니다."}
@@ -216,12 +216,12 @@ def create_slots_strategy_router(
         return result
 
     @router.post("/api/slots/buy")
-    async def buy_watch_slot(request: Request, username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def buy_watch_slot(body: Optional[Dict[str, Any]] = Body(default=None), username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"success": False, "message": "봇이 초기화되지 않았습니다."}
         try:
-            body: Dict[str, Any] = await request.json()
+            body = body or {}
             symbol: str = body.get("symbol", "").strip().upper()
             buy_percent: float = float(body.get("buy_percent", 1))
         except Exception:
@@ -236,12 +236,12 @@ def create_slots_strategy_router(
         return result
 
     @router.post("/api/slots/remove")
-    async def remove_slot(request: Request, username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def remove_slot(body: Optional[Dict[str, Any]] = Body(default=None), username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"success": False, "message": "봇이 초기화되지 않았습니다."}
         try:
-            body: Dict[str, Any] = await request.json()
+            body = body or {}
             symbol: str = body.get("symbol", "").strip().upper()
             sell_all: bool = bool(body.get("sell_all", True))
         except Exception:
@@ -256,12 +256,12 @@ def create_slots_strategy_router(
         return result
 
     @router.post("/api/slots/reorder")
-    async def reorder_slots(request: Request, username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def reorder_slots(body: Optional[Dict[str, Any]] = Body(default=None), username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"success": False, "message": "봇이 초기화되지 않았습니다."}
         try:
-            body: Dict[str, Any] = await request.json()
+            body = body or {}
             symbols: List[str] = body.get("symbols", []) or []
             if not isinstance(symbols, list):
                 return {"success": False, "message": "잘못된 요청입니다. (symbols 배열 필요)"}
@@ -289,7 +289,7 @@ def create_slots_strategy_router(
         }
 
     @router.get("/api/search-ticker")
-    async def search_ticker(symbol: str = "", username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def search_ticker(symbol: str = "", username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         bot = get_bot()
         if not bot:
             return {"found": False, "message": "봇이 초기화되지 않았습니다."}
@@ -332,7 +332,7 @@ def create_slots_strategy_router(
         }
 
     @router.get("/api/autocomplete")
-    async def autocomplete_ticker(q: str = "", username: str = Depends(auth_dependency)) -> Dict[str, Any]:
+    def autocomplete_ticker(q: str = "", username: str = Depends(auth_dependency)) -> Dict[str, Any]:
         query: str = q.strip().upper()
         if len(query) < 1:
             return {"results": []}

@@ -3,6 +3,16 @@ venv/
 __pycache__/
 *.pyc
 
+# Runtime data (never commit real trading state/logs)
+slots.json
+hwm_data.json
+daily_state.json
+strategy_mode.json
+trade_log.json
+equity_log.json
+us_symbol_master.json
+runtime_data/
+
 # Backtest outputs
 *.png
 

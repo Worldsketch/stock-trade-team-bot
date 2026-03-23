@@ -12,15 +12,28 @@ import ccxt
 def retry_api(max_retries: int = 3, delay_sec: float = 1.0) -> Any:
     def decorator(func: Any) -> Any:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            api_obj: Optional[Any] = args[0] if args else None
+            call_key: str = str(func.__name__)
+            if api_obj and hasattr(api_obj, "_circuit_before_call"):
+                api_obj._circuit_before_call(call_key)
             for attempt in range(max_retries):
                 try:
-                    return func(*args, **kwargs)
+                    result = func(*args, **kwargs)
+                    if api_obj and hasattr(api_obj, "_circuit_on_success"):
+                        api_obj._circuit_on_success(call_key)
+                    return result
+                except (ccxt.NetworkError, ccxt.ExchangeError):
+                    raise
                 except requests.exceptions.RequestException as e:
+                    if api_obj and hasattr(api_obj, "_circuit_on_failure"):
+                        api_obj._circuit_on_failure(call_key)
                     if attempt == max_retries - 1:
                         raise ccxt.NetworkError(f"API 네트워크 오류 발생: {str(e)}")
                     if delay_sec > 0:
                         time.sleep(delay_sec)
                 except Exception as e:
+                    if api_obj and hasattr(api_obj, "_circuit_on_failure"):
+                        api_obj._circuit_on_failure(call_key)
                     if attempt == max_retries - 1:
                         raise ccxt.ExchangeError(f"API 거래소 오류 발생: {str(e)}")
                     if delay_sec > 0:
@@ -101,6 +114,53 @@ class KoreaInvestmentAPI:
         self._foreign_margin_cache: Dict[str, float] = {"usd": 0.0, "exchange_rate": 0.0, "ts": 0.0}
         self._foreign_margin_cache_ttl_sec: float = 2.0
         self._foreign_margin_lock = threading.Lock()
+        self._circuit_lock = threading.Lock()
+        self._circuit_fail_count: Dict[str, int] = {}
+        self._circuit_open_until: Dict[str, float] = {}
+        try:
+            self._circuit_fail_threshold: int = max(1, int(str(os.getenv("KIS_CIRCUIT_FAIL_THRESHOLD", "4")).strip()))
+        except Exception:
+            self._circuit_fail_threshold = 4
+        self._circuit_cooldown_sec: float = max(1.0, _safe_float(os.getenv("KIS_CIRCUIT_COOLDOWN_SEC", "8"), 8.0))
+        self._circuit_max_entries: int = 64
+
+    def _circuit_before_call(self, call_key: str) -> None:
+        key: str = str(call_key or "").strip()
+        if not key:
+            return
+        now_ts: float = time.time()
+        with self._circuit_lock:
+            open_until: float = float(self._circuit_open_until.get(key, 0.0) or 0.0)
+            if open_until > now_ts:
+                remain: float = max(0.1, open_until - now_ts)
+                raise ccxt.NetworkError(f"KIS circuit open: {key} ({remain:.1f}s)")
+            if key in self._circuit_open_until:
+                self._circuit_open_until.pop(key, None)
+                self._circuit_fail_count.pop(key, None)
+
+    def _circuit_on_success(self, call_key: str) -> None:
+        key: str = str(call_key or "").strip()
+        if not key:
+            return
+        with self._circuit_lock:
+            self._circuit_fail_count.pop(key, None)
+            self._circuit_open_until.pop(key, None)
+
+    def _circuit_on_failure(self, call_key: str) -> None:
+        key: str = str(call_key or "").strip()
+        if not key:
+            return
+        now_ts: float = time.time()
+        with self._circuit_lock:
+            fail_count: int = int(self._circuit_fail_count.get(key, 0) or 0) + 1
+            self._circuit_fail_count[key] = fail_count
+            if fail_count >= self._circuit_fail_threshold:
+                self._circuit_open_until[key] = now_ts + self._circuit_cooldown_sec
+                self._circuit_fail_count[key] = 0
+            if len(self._circuit_open_until) > self._circuit_max_entries:
+                oldest_key = min(self._circuit_open_until.keys(), key=lambda k: self._circuit_open_until.get(k, 0.0))
+                self._circuit_open_until.pop(oldest_key, None)
+                self._circuit_fail_count.pop(oldest_key, None)
 
     def _get_exchange_code(self, symbol: str, style: str = "short") -> str:
         if symbol in self._exchange_cache:

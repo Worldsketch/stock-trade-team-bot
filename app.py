@@ -68,7 +68,7 @@ def _ensure_ai_report_storage() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global bot_instance, bot_thread
+    global bot_instance, bot_thread, _bot_starting
     load_dotenv()
     _ensure_ai_report_storage()
     
@@ -80,7 +80,9 @@ async def lifespan(app: FastAPI):
     api: KoreaInvestmentAPI = KoreaInvestmentAPI(app_key, app_secret, account_no, account_code, is_mock=False)
     bot_instance = TradingBot(api)
 
-    bot_thread = threading.Thread(target=bot_instance.run_loop, daemon=True)
+    with _bot_control_lock:
+        _bot_starting = True
+    bot_thread = threading.Thread(target=_run_bot_loop_wrapper, daemon=True)
     bot_thread.start()
     print("[자동 시작] 봇 매매 루프가 자동으로 시작되었습니다.")
 
@@ -104,14 +106,47 @@ _auth_fail_state: Dict[str, Dict[str, float]] = {}
 _AUTH_FAIL_WINDOW_SEC: float = 300.0
 _AUTH_FAIL_MAX_COUNT: int = 8
 _AUTH_BLOCK_SEC: float = 900.0
+_bot_control_lock = threading.Lock()
+_bot_starting: bool = False
+
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    value: str = str(os.getenv(name, default)).strip().lower()
+    return value in ("1", "true", "yes", "on")
+
+
+_TRUST_PROXY_HEADERS: bool = _env_flag("TRUST_PROXY_HEADERS", "false")
+_TRUSTED_PROXY_IPS: set = {
+    ip.strip() for ip in str(os.getenv("TRUSTED_PROXY_IPS", "")).split(",") if ip.strip()
+}
+
+
+def _run_bot_loop_wrapper() -> None:
+    global _bot_starting, bot_instance
+    with _bot_control_lock:
+        _bot_starting = False
+    try:
+        if bot_instance:
+            bot_instance.run_loop()
+    finally:
+        with _bot_control_lock:
+            _bot_starting = False
 
 
 def _get_client_ip(request: Request) -> str:
-    xff: str = str(request.headers.get("x-forwarded-for", "")).strip()
-    if xff:
-        return xff.split(",")[0].strip()
+    remote_ip: str = ""
     if request.client and request.client.host:
-        return str(request.client.host)
+        remote_ip = str(request.client.host).strip()
+    if _TRUST_PROXY_HEADERS:
+        # TRUSTED_PROXY_IPS가 비어있으면 모든 프록시를 신뢰, 채워져 있으면 해당 프록시만 신뢰
+        if (not _TRUSTED_PROXY_IPS) or (remote_ip in _TRUSTED_PROXY_IPS):
+            xff: str = str(request.headers.get("x-forwarded-for", "")).strip()
+            if xff:
+                forwarded: str = xff.split(",")[0].strip()
+                if forwarded:
+                    return forwarded
+    if remote_ip:
+        return remote_ip
     return "unknown"
 
 
@@ -594,20 +629,34 @@ def _auto_generate_report() -> None:
 
 @app.post("/api/start")
 async def start_bot(username: str = Depends(get_current_username)) -> Dict[str, str]:
-    global bot_thread, bot_instance
-    if bot_instance and not bot_instance.is_running:
-        bot_thread = threading.Thread(target=bot_instance.run_loop, daemon=True)
-        bot_thread.start()
-        return {"status": "started", "message": "봇이 시작되었습니다."}
-    return {"status": "already_running", "message": "이미 실행 중입니다."}
+    global bot_thread, bot_instance, _bot_starting
+    with _bot_control_lock:
+        if not bot_instance:
+            return {"status": "error", "message": "봇이 초기화되지 않았습니다."}
+        if _bot_starting:
+            return {"status": "starting", "message": "봇이 시작 중입니다."}
+        if bot_instance.is_running:
+            return {"status": "already_running", "message": "이미 실행 중입니다."}
+        if bot_thread and bot_thread.is_alive():
+            return {"status": "already_running", "message": "이미 실행 중입니다."}
+        _bot_starting = True
+        try:
+            bot_thread = threading.Thread(target=_run_bot_loop_wrapper, daemon=True)
+            bot_thread.start()
+            return {"status": "started", "message": "봇이 시작되었습니다."}
+        except Exception:
+            _bot_starting = False
+            raise
 
 @app.post("/api/stop")
 async def stop_bot(username: str = Depends(get_current_username)) -> Dict[str, str]:
-    global bot_instance
-    if bot_instance and bot_instance.is_running:
-        bot_instance.stop_loop()
-        return {"status": "stopped", "message": "봇이 중지되었습니다."}
-    return {"status": "already_stopped", "message": "이미 중지되어 있습니다."}
+    global bot_instance, _bot_starting
+    with _bot_control_lock:
+        if bot_instance and (bot_instance.is_running or _bot_starting):
+            bot_instance.stop_loop()
+            _bot_starting = False
+            return {"status": "stopped", "message": "봇이 중지되었습니다."}
+        return {"status": "already_stopped", "message": "이미 중지되어 있습니다."}
 
 if __name__ == "__main__":
     app_host: str = os.getenv("APP_HOST", "127.0.0.1").strip() or "127.0.0.1"
