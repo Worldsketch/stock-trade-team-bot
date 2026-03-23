@@ -118,6 +118,9 @@ class SlotManager:
                         slot['peak_source'] = str(slot.get('peak_source', 'legacy' if slot['watch_only'] else 'n/a') or 'n/a')
                         if 'peak_source' not in slot:
                             changed = True
+                        slot['ath_ready'] = bool(slot.get('ath_ready', True))
+                        if 'ath_ready' not in slot:
+                            changed = True
                         slot['anchor_at'] = str(slot.get('anchor_at', slot.get('added_at', '')) or '')
                         slot['active'] = bool(slot.get('active', True))
                         # 레버리지 ETF는 본주 매핑을 강제 보정 (과거 저장 데이터 정합성 복구)
@@ -174,6 +177,7 @@ class SlotManager:
         peak_price: float = 0.0,
         all_time_high: float = 0.0,
         peak_source: str = "",
+        ath_ready: bool = True,
         anchor_at: str = "",
     ) -> bool:
         if self.is_full() or self.has_symbol(symbol):
@@ -188,6 +192,7 @@ class SlotManager:
             'peak_price': float(peak_price or anchor_price or 0.0),
             'all_time_high': float(all_time_high or peak_price or anchor_price or 0.0),
             'peak_source': str(peak_source or ('ath' if watch_only else 'n/a')),
+            'ath_ready': bool(ath_ready),
             'watch_only': bool(watch_only),
             'is_leveraged': is_leveraged,
             'active': True,
@@ -568,6 +573,7 @@ class TradingBot:
         peak_price: float = float(slot_info.get("peak_price", 0.0) or 0.0)
         anchor_price: float = float(slot_info.get("anchor_price", 0.0) or 0.0)
         source: str = str(slot_info.get("peak_source", "n/a") or "n/a").lower()
+        ath_ready: bool = bool(slot_info.get("ath_ready", True))
         suspicious_ath: bool = False
         if anchor_price > 0 and cur_ath > (anchor_price * 8.0):
             suspicious_ath = True
@@ -582,7 +588,7 @@ class TradingBot:
             and cur_ath <= (seed_ref_price * 1.02)
             and peak_price <= (seed_ref_price * 1.02)
         )
-        if source == "ath" and cur_ath > 0 and peak_price > 0 and (not suspicious_ath) and (not seed_like_ath):
+        if source == "ath" and ath_ready and cur_ath > 0 and peak_price > 0 and (not suspicious_ath) and (not seed_like_ath):
             return max(cur_ath, peak_price)
 
         now_ts: float = time.time()
@@ -607,6 +613,7 @@ class TradingBot:
                 all_time_high=ath,
                 peak_price=next_peak,
                 peak_source="ath",
+                ath_ready=True,
             )
         return ath
 
@@ -803,6 +810,7 @@ class TradingBot:
                     peak_price=ath_seed,
                     all_time_high=ath_seed,
                     peak_source="ath",
+                    ath_ready=False,
                 )
                 self.is_uptrend[symbol] = False
                 self.is_rsi_oversold[symbol] = False
@@ -860,7 +868,8 @@ class TradingBot:
                 anchor_price=current_price,
                 peak_price=all_time_high,
                 all_time_high=all_time_high,
-                peak_source="ath",
+                peak_source="seed",
+                ath_ready=False,
                 anchor_at=datetime.now().isoformat(),
             )
             if not ok:
@@ -897,6 +906,7 @@ class TradingBot:
                 peak_price=ath_seed,
                 all_time_high=ath_seed,
                 peak_source="ath",
+                ath_ready=False,
             )
             self.is_uptrend[symbol] = False
             self.is_rsi_oversold[symbol] = False
@@ -963,6 +973,7 @@ class TradingBot:
             peak_price=ath_seed,
             all_time_high=ath_seed,
             peak_source="ath",
+            ath_ready=False,
         )
         self.is_uptrend[symbol] = False
         self.is_rsi_oversold[symbol] = False
@@ -1873,6 +1884,7 @@ class TradingBot:
                     "anchor_price": float(slot_info.get("anchor_price", 0.0) or 0.0),
                     "peak_price": slot_peak,
                     "all_time_high": slot_ath,
+                    "ath_ready": bool(slot_info.get("ath_ready", True)),
                     "anchor_at": str(slot_info.get("anchor_at", "")),
                     "base_price": 0.0,
                 }

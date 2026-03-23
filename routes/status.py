@@ -198,6 +198,7 @@ def create_status_router(
                     position["anchor_price"] = anchor_price
                     position["peak_price"] = peak_price
                     position["all_time_high"] = all_time_high
+                    position["ath_ready"] = bool(slot_info.get("ath_ready", position.get("ath_ready", True)))
                     position["anchor_at"] = str(slot_info.get("anchor_at", position.get("anchor_at", "")))
                     current_price = float(position.get("current_price", 0.0) or 0.0)
                     cached_price = _get_cached_slot_price(symbol, now)
@@ -268,6 +269,7 @@ def create_status_router(
                             "anchor_price": float(slot.get("anchor_price", 0.0) or 0.0),
                             "peak_price": peak_price,
                             "all_time_high": all_time_high,
+                            "ath_ready": bool(slot.get("ath_ready", True)),
                             "anchor_at": str(slot.get("anchor_at", "")),
                             "base_price": 0.0,
                         }
@@ -391,6 +393,7 @@ def create_status_router(
                     current_price = float(slot_info.get("anchor_price", 0.0) or 0.0)
                 peak_price = float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0)
                 all_time_high = float(slot_info.get("all_time_high", peak_price) or peak_price)
+                ath_ready = bool(slot_info.get("ath_ready", True))
                 base_symbol: str = slot_info.get("base_asset", symbol)
                 positions_list.append(
                     {
@@ -408,6 +411,7 @@ def create_status_router(
                         "anchor_price": float(slot_info.get("anchor_price", 0.0) or 0.0),
                         "peak_price": peak_price,
                         "all_time_high": all_time_high,
+                        "ath_ready": ath_ready,
                         "anchor_at": str(slot_info.get("anchor_at", "")),
                         # 본주 차트/실시간 표시를 사용하지 않아 상태 조회에서 별도 본주 시세 조회를 생략
                         "base_price": 0.0,
@@ -428,6 +432,7 @@ def create_status_router(
                     fallback_price = anchor_price
                 peak_price = float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0)
                 all_time_high = float(slot_info.get("all_time_high", peak_price) or peak_price)
+                ath_ready = bool(slot_info.get("ath_ready", True))
                 base_symbol = slot_info.get("base_asset", symbol)
                 positions_list.append(
                     {
@@ -442,6 +447,7 @@ def create_status_router(
                         "anchor_price": float(slot_info.get("anchor_price", 0.0) or 0.0),
                         "peak_price": peak_price,
                         "all_time_high": all_time_high,
+                        "ath_ready": ath_ready,
                         "anchor_at": str(slot_info.get("anchor_at", "")),
                         "base_price": 0.0,
                     }

@@ -1304,7 +1304,8 @@
                 anchor_price: watchOnly ? price : 0,
                 peak_price: price,
                 all_time_high: price,
-                peak_source: 'ath',
+                peak_source: 'seed',
+                ath_ready: false,
                 watch_only: watchOnly,
                 is_leveraged: data.is_leveraged === true,
                 active: true,
@@ -1329,6 +1330,7 @@
                 anchor_price: watchOnly ? price : 0,
                 peak_price: price,
                 all_time_high: price,
+                ath_ready: false,
                 anchor_at: new Date().toISOString(),
                 base_price: 0,
             };
@@ -1364,11 +1366,13 @@
                 if (slot) {
                     slot.watch_only = false;
                     slot.anchor_price = 0;
+                    slot.ath_ready = false;
                 }
                 const pos = nextData.positions.find((item) => sanitizeSymbol(item?.symbol || '') === safeSymbol);
                 if (pos) {
                     pos.watch_only = false;
                     pos.anchor_price = 0;
+                    pos.ath_ready = false;
                     if (Number(pos.current_price || 0) <= 0 && Number(data.price || 0) > 0) {
                         pos.current_price = Number(data.price || 0);
                     }
@@ -1611,6 +1615,7 @@
             const watchOnly = pos.watch_only === true;
             const anchorPrice = Number(pos.anchor_price || 0);
             const peakPriceRaw = Number(pos.all_time_high || pos.peak_price || 0);
+            const athReady = pos.ath_ready !== false;
             const symbol = sanitizeSymbol(pos.symbol || '');
             const rawCurrentPrice = Number(pos.current_price || 0);
             if (watchOnly && symbol && rawCurrentPrice > 0) {
@@ -1660,7 +1665,9 @@
             const baseEl = card.querySelector('[data-field="base-asset"]');
             if (baseEl) {
                 const left = leverageText ? `${escapeHtml(leverageText)} · ` : '';
-                baseEl.innerHTML = `${left}최고점 대비 <span class="${peakRateColor}">${peakRateSign}${peakRetRate.toFixed(1)}%</span>`;
+                baseEl.innerHTML = athReady
+                    ? `${left}최고점 대비 <span class="${peakRateColor}">${peakRateSign}${peakRetRate.toFixed(1)}%</span>`
+                    : `${left}최고점 대비 <span class="text-slate-400">처리중</span>`;
             }
             const retBadgeEl = card.querySelector('[data-field="ret-badge"]');
             if (retBadgeEl) {
