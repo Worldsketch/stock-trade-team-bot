@@ -2061,13 +2061,14 @@ class TradingBot:
         try:
             self.sync_positions()
             total_equity: float = self._calc_total_equity()
+            recheck_kst: str = self._get_premarket_recheck_kst_label()
 
             msg = "🌅 [일일 봇 상태 리포트]\n"
             msg += f"✅ 한투 API 연결 및 토큰 갱신 성공\n"
             msg += f"💵 예수금: ${self.last_usd_balance:,.2f} (약 {self.last_krw_balance:,.0f}원)\n"
             msg += f"💰 총 자산: ${total_equity:,.2f} (약 {total_equity * self.exchange_rate:,.0f}원)\n"
             msg += f"💱 환율: {self.exchange_rate:,.2f}원/USD\n"
-            msg += f"📌 매수 가능 여부는 본장 30분 전(ET 09:00) 재검수에서 확정됩니다."
+            msg += f"📌 매수 가능 여부는 본장 30분 전 재검수({recheck_kst} KST)에서 확정됩니다."
             self.send_telegram_message(msg)
         except Exception as e:
             self.log(f"브리핑 전송 실패: {e}")
@@ -2076,6 +2077,8 @@ class TradingBot:
         """본장 30분 전(ET 09:00) 실시간 프리장 가격으로 SMA200 재검수"""
         self.log("🔄 [본장 전 재검수] 실시간 가격으로 SMA200 재확인 중...")
         changes: List[str] = []
+        now_kst: datetime = self.get_korean_time()
+        kst_hm: str = now_kst.strftime('%H:%M')
 
         for etf_sym, base_sym in self.base_assets.items():
             try:
@@ -2110,7 +2113,7 @@ class TradingBot:
 
         if changes:
             msg: str = "🔄 [본장 전 재검수 - 상태 변경 감지!]\n"
-            msg += f"⏰ 시각: {self.get_eastern_time().strftime('%H:%M')} ET\n"
+            msg += f"⏰ 시각: {kst_hm} KST\n"
             msg += "\n".join(changes)
             self.send_telegram_message(msg)
         else:
@@ -2119,10 +2122,16 @@ class TradingBot:
                 icon: str = "🟢" if self.is_uptrend.get(etf_sym, False) else "🔴"
                 summary_lines.append(f" - {base_sym} ({etf_sym}): {icon} 변동 없음")
             msg = "🔄 [본장 전 재검수 완료]\n"
-            msg += f"⏰ 시각: {self.get_eastern_time().strftime('%H:%M')} ET\n"
+            msg += f"⏰ 시각: {kst_hm} KST\n"
             msg += "✅ 자정 브리핑 대비 변동 없음\n"
             msg += "\n".join(summary_lines)
             self.send_telegram_message(msg)
+
+    def _get_premarket_recheck_kst_label(self) -> str:
+        """본장 30분 전 재검수 시각을 KST(HH:MM)로 반환."""
+        now_et: datetime = self.get_eastern_time()
+        precheck_et: datetime = now_et.replace(hour=9, minute=0, second=0, microsecond=0)
+        return precheck_et.astimezone(ZoneInfo("Asia/Seoul")).strftime("%H:%M")
 
     def _check_cash_ratio(self) -> None:
         try:
