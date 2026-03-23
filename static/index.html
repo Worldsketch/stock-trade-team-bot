@@ -2598,7 +2598,7 @@
 
                 const statusBg = uptrend ? 'border-emerald-500/30' : 'border-rose-500/30';
                 const statusText = uptrend ? '🟢 SMA200 위 (매수 가능)' : '🔴 SMA200 아래 (매수 보류)';
-                const oversoldTag = oversold ? '<span class="text-xs text-amber-400 font-medium">⚡ RSI 과매도</span>' : '';
+                const oversoldTag = oversold ? '<span class="text-[11px] text-amber-400 font-medium ml-auto shrink-0">⚡ RSI 과매도</span>' : '';
                 const smaDistText = `${smaDist >= 0 ? '+' : ''}${smaDist.toFixed(1)}`;
 
                 const etfPrice = (p.etf_current_price || {})[sym] || prevClose;
@@ -2619,8 +2619,10 @@
                         <span class="text-base font-bold text-white">${sym}</span>
                         <span class="text-xs text-slate-500">${base}</span>
                     </div>
-                    <p class="text-xs text-slate-400 mb-1">${statusText}</p>
-                    ${oversoldTag}
+                    <div class="flex items-center gap-2 mb-1">
+                        <p class="text-xs text-slate-400">${statusText}</p>
+                        ${oversoldTag}
+                    </div>
                     <div class="mt-3 pt-3 border-t border-slate-700/50 space-y-1">
                         <div class="flex justify-between"><span class="text-xs text-slate-500">${base} 현재가</span><span class="text-xs text-white font-semibold">$${bPrice.toFixed(2)}</span></div>
                         <div class="flex justify-between"><span class="text-xs text-slate-500">${base} SMA200</span><span class="text-xs text-slate-300"><span class="${smaDist >= 5 ? 'text-emerald-400' : smaDist >= 0 ? 'text-amber-400' : 'text-rose-400'} font-semibold">${smaDist >= 5 ? '✅ 여유' : smaDist >= 0 ? '⚠️ 근접' : '🔴 아래'}</span> (현재가 대비 ${smaDistText}%) $${bSma.toFixed(2)}</span></div>
