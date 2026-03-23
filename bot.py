@@ -573,7 +573,16 @@ class TradingBot:
             suspicious_ath = True
         if float(price_hint or 0.0) > 0 and cur_ath > (float(price_hint) * 2.2):
             suspicious_ath = True
-        if source == "ath" and cur_ath > 0 and peak_price > 0 and (not suspicious_ath):
+        seed_ref_price: float = max(anchor_price, float(price_hint or 0.0))
+        # 슬롯 추가 직후 seed 값(추가가/현재가)을 ATH로 잘못 간주한 경우를 강제로 백필
+        seed_like_ath: bool = (
+            seed_ref_price > 0
+            and cur_ath > 0
+            and peak_price > 0
+            and cur_ath <= (seed_ref_price * 1.02)
+            and peak_price <= (seed_ref_price * 1.02)
+        )
+        if source == "ath" and cur_ath > 0 and peak_price > 0 and (not suspicious_ath) and (not seed_like_ath):
             return max(cur_ath, peak_price)
 
         now_ts: float = time.time()
