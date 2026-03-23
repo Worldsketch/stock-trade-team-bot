@@ -5,7 +5,7 @@ import time
 import threading
 import copy
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional, Set, Tuple
 import exchange_calendars as xcals
@@ -424,6 +424,13 @@ class TradingBot:
 
     def is_us_market_holiday(self, now_et: datetime) -> bool:
         d = now_et.date()
+        try:
+            return not self._nyse_cal.is_session(pd.Timestamp(d))
+        except Exception:
+            return False
+
+    def _is_us_market_holiday_on_date(self, d: date) -> bool:
+        """지정한 미국 거래일 날짜의 휴장 여부를 반환합니다."""
         try:
             return not self._nyse_cal.is_session(pd.Timestamp(d))
         except Exception:
@@ -1351,13 +1358,16 @@ class TradingBot:
         if now_kst.weekday() >= 5:
             return False
 
-        now_et: datetime = now_kst.astimezone(ZoneInfo("America/New_York"))
-        if self.is_us_market_holiday(now_et):
-            return False
-
         daytime_open: datetime = now_kst.replace(hour=9, minute=0, second=0, microsecond=0)
         daytime_close: datetime = now_kst.replace(hour=16, minute=0, second=0, microsecond=0)
-        return daytime_open <= now_kst < daytime_close
+        if not (daytime_open <= now_kst < daytime_close):
+            return False
+
+        # KST 데이장(09:00~16:00)은 ET 기준 전일 밤에 형성되므로
+        # "현재 ET 날짜"가 아니라 "다음 ET 거래일"의 휴장 여부를 본다.
+        now_et: datetime = now_kst.astimezone(ZoneInfo("America/New_York"))
+        target_session_date: date = now_et.date() + timedelta(days=1)
+        return not self._is_us_market_holiday_on_date(target_session_date)
 
     def send_telegram_message(self, message: str, max_retries: int = 3) -> None:
         token = os.getenv("TELEGRAM_BOT_TOKEN")

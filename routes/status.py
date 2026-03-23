@@ -203,6 +203,12 @@ def create_status_router(
                     cached_price = _get_cached_slot_price(symbol, now)
                     cached_ts = _get_cached_slot_ts(symbol, now)
                     prev_status_price = _get_prev_status_price(symbol)
+                    watch_anchor_like: bool = (
+                        watch_only
+                        and anchor_price > 0
+                        and current_price > 0
+                        and abs(current_price - anchor_price) <= max(0.01, anchor_price * 0.00005)
+                    )
                     if current_price > 0:
                         # 오래된 스냅샷이 최신 캐시 가격을 덮어쓰지 않도록 보호
                         if cached_price > 0 and (snapshot_is_stale or (cached_ts > snapshot_quote_ts > 0)):
@@ -211,7 +217,7 @@ def create_status_router(
                                 stale_price_candidates.add(symbol)
                         else:
                             _set_cached_slot_price(symbol, current_price, now)
-                            if snapshot_is_stale and allow_quote_refresh:
+                            if allow_quote_refresh and (snapshot_is_stale or (watch_anchor_like and cached_price <= 0)):
                                 stale_price_candidates.add(symbol)
                         continue
                     if cached_price > 0:
@@ -241,7 +247,12 @@ def create_status_router(
                         fallback_price = anchor_price
                     peak_price = float(slot.get("peak_price", slot.get("anchor_price", 0.0)) or 0.0)
                     all_time_high = float(slot.get("all_time_high", peak_price) or peak_price)
-                    if allow_quote_refresh and fallback_price <= 0 and quote_refresh_budget > 0:
+                    should_refresh_missing_slot: bool = fallback_price <= 0 or (
+                        watch_only
+                        and anchor_price > 0
+                        and abs(fallback_price - anchor_price) <= max(0.01, anchor_price * 0.00005)
+                    )
+                    if allow_quote_refresh and should_refresh_missing_slot and quote_refresh_budget > 0:
                         if _schedule_slot_price_refresh(bot, symbol, is_daytime_session):
                             quote_refresh_budget -= 1
                     positions_list.append(
