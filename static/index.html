@@ -1008,7 +1008,8 @@
             }
             syms.forEach(sym => {
                 const isActive = sym === currentChartSymbol ? ' active' : '';
-                html += `<button onclick="changeChart('${sym}')" data-symbol="${sym}" class="chart-btn${isActive} px-2.5 py-1 text-[11px] font-medium rounded-md transition-all">${sym}</button>`;
+                const style = getChartButtonStyle(sym, !!isActive);
+                html += `<button onclick="changeChart('${sym}')" data-symbol="${sym}" class="chart-btn${isActive} px-2.5 py-1 text-[11px] font-medium rounded-md transition-all" style="${style}">${sym}</button>`;
             });
             group.innerHTML = html;
         }
@@ -1453,33 +1454,87 @@
             });
         }
 
-        const SLOT_COLORS = [
-            { glow: 'glow-green', border: 'border-emerald-500/30', bg: 'bg-emerald-600', text: 'text-emerald-400' },
-            { glow: 'glow-red', border: 'border-rose-500/30', bg: 'bg-rose-600', text: 'text-rose-400' },
-            { glow: 'glow-blue', border: 'border-blue-500/30', bg: 'bg-blue-600', text: 'text-blue-400' },
-            { glow: 'glow-purple', border: 'border-purple-500/30', bg: 'bg-purple-600', text: 'text-purple-400' },
-            { glow: 'glow-amber', border: 'border-amber-500/30', bg: 'bg-amber-600', text: 'text-amber-400' },
-            { glow: 'glow-cyan', border: 'border-cyan-500/30', bg: 'bg-cyan-600', text: 'text-cyan-400' },
-        ];
+        const FIXED_SYMBOL_COLOR_MAP = Object.freeze({
+            NVDA: '#76B900', NVDL: '#76B900',
+            TSLA: '#CC0000', TSLL: '#CC0000',
+            MSFT: '#0078D4', MSFU: '#0078D4',
+            AAPL: '#A2AAAD', AAPU: '#A2AAAD',
+            AMZN: '#FF9900', AMZU: '#FF9900',
+            GOOG: '#4285F4', GOOGL: '#4285F4', GGLL: '#4285F4', GOOU: '#4285F4',
+            META: '#0866FF', METU: '#0866FF',
+            COIN: '#1652F0', CONL: '#1652F0',
+            QQQ: '#4F46E5', TQQQ: '#4F46E5', SQQQ: '#4F46E5',
+            SPY: '#0EA5E9', UPRO: '#0EA5E9', SPXU: '#0EA5E9', SPXL: '#0EA5E9',
+            SOXX: '#7C3AED', SOXL: '#7C3AED', SOXS: '#7C3AED',
+            XLK: '#2563EB', TECL: '#2563EB', TECS: '#2563EB',
+            XLF: '#0F766E', FAS: '#0F766E', FAZ: '#0F766E',
+            XBI: '#EC4899', LABU: '#EC4899',
+            IWM: '#10B981', TNA: '#10B981', TZA: '#10B981',
+            DIA: '#6B7280', UDOW: '#6B7280',
+            GLD: '#F59E0B',
+            SLV: '#94A3B8',
+            BTC: '#F7931A', BITX: '#F7931A',
+        });
+        const RANDOM_SYMBOL_COLOR_POOL = Object.freeze([
+            '#22C55E', '#EF4444', '#3B82F6', '#A855F7', '#F59E0B', '#06B6D4',
+            '#14B8A6', '#84CC16', '#F97316', '#EC4899', '#8B5CF6', '#0EA5E9',
+            '#EAB308', '#F43F5E', '#6366F1', '#10B981', '#F472B6', '#0284C7',
+        ]);
         const WATCH_ONLY_CARD_COLOR = {
-            glow: '',
             border: 'border-slate-600/70',
             bg: 'bg-slate-700',
             text: 'text-slate-300',
         };
 
-        // 슬롯 색상은 심볼 하드코딩 없이, 추가 순서를 기준으로 고정
-        const SLOT_COLOR_LOCK_KEY = 'stb_slot_color_lock_v1';
-        const FIXED_SYMBOL_COLOR_MAP = {};
-        const ADDED_SLOT_COLOR_PRIORITY = [4, 3, 5, 0, 1, 2]; // amber, purple, cyan, ...
+        // 심볼별 색상 잠금: 고정 매핑 우선, 그 외는 최초 1회 랜덤 배정 후 유지
+        const SLOT_COLOR_LOCK_KEY = 'stb_symbol_color_lock_v2';
         let slotColorLock = {};
+        const slotColorStyleCache = {};
+
+        function normalizeHex(hex) {
+            const raw = String(hex || '').trim().replace(/^#/, '');
+            if (!/^[0-9A-Fa-f]{6}$/.test(raw)) return '';
+            return `#${raw.toUpperCase()}`;
+        }
+
+        function hexToRgb(hex) {
+            const norm = normalizeHex(hex);
+            if (!norm) return null;
+            const v = norm.slice(1);
+            return {
+                r: Number.parseInt(v.slice(0, 2), 16),
+                g: Number.parseInt(v.slice(2, 4), 16),
+                b: Number.parseInt(v.slice(4, 6), 16),
+            };
+        }
+
+        function rgbaFromHex(hex, alpha) {
+            const rgb = hexToRgb(hex);
+            const a = Number.isFinite(alpha) ? alpha : 1;
+            if (!rgb) return `rgba(100,116,139,${a})`;
+            return `rgba(${rgb.r},${rgb.g},${rgb.b},${a})`;
+        }
+
+        function getReadableTextColor(hex) {
+            const rgb = hexToRgb(hex);
+            if (!rgb) return '#FFFFFF';
+            const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+            return luminance > 0.62 ? '#0F172A' : '#FFFFFF';
+        }
 
         function loadSlotColorLock() {
             try {
                 const raw = localStorage.getItem(SLOT_COLOR_LOCK_KEY);
                 if (!raw) return {};
                 const parsed = JSON.parse(raw);
-                return (parsed && typeof parsed === 'object') ? parsed : {};
+                if (!parsed || typeof parsed !== 'object') return {};
+                const cleaned = {};
+                Object.entries(parsed).forEach(([k, v]) => {
+                    const sym = sanitizeSymbol(k);
+                    const hex = normalizeHex(v);
+                    if (sym && hex) cleaned[sym] = hex;
+                });
+                return cleaned;
             } catch (_) {
                 return {};
             }
@@ -1490,59 +1545,62 @@
             try { localStorage.setItem(SLOT_COLOR_LOCK_KEY, JSON.stringify(slotColorLock)); } catch (_) {}
         }
 
-        function syncSlotColorLock() {
-            const slots = Array.isArray(currentSlots) ? currentSlots : [];
-            const nextLock = {};
-            const used = new Set();
+        function pickRandom(arr) {
+            if (!Array.isArray(arr) || arr.length === 0) return '';
+            return arr[Math.floor(Math.random() * arr.length)] || '';
+        }
 
-            // 1) 고정 매핑 종목(현재 없음)을 우선 배치
-            slots.forEach((slot) => {
-                const sym = sanitizeSymbol(slot?.symbol || '');
-                if (!sym) return;
-                const fixedIdx = FIXED_SYMBOL_COLOR_MAP[sym];
-                if (fixedIdx !== undefined) {
-                    nextLock[sym] = fixedIdx;
-                    used.add(fixedIdx);
-                }
-            });
-
-            // 2) 추가 슬롯은 추가 시각 기준으로 amber -> purple -> cyan ... 순서 고정
-            const addedSlots = slots
-                .map((slot) => {
-                    const sym = sanitizeSymbol(slot?.symbol || '');
-                    return {
-                        sym,
-                        addedAt: String(slot?.added_at || slot?.anchor_at || ''),
-                    };
-                })
-                .filter((slot) => slot.sym && FIXED_SYMBOL_COLOR_MAP[slot.sym] === undefined)
-                .sort((a, b) => {
-                    if (a.addedAt !== b.addedAt) return a.addedAt.localeCompare(b.addedAt);
-                    return a.sym.localeCompare(b.sym);
-                });
-
-            addedSlots.forEach((slot, idx) => {
-                let colorIdx = ADDED_SLOT_COLOR_PRIORITY.find((c) => !used.has(c));
-                if (colorIdx === undefined) {
-                    colorIdx = ADDED_SLOT_COLOR_PRIORITY[idx % ADDED_SLOT_COLOR_PRIORITY.length];
-                }
-                nextLock[slot.sym] = colorIdx;
-                used.add(colorIdx);
-            });
-
-            slotColorLock = nextLock;
+        function getOrAssignRandomSymbolColor(sym) {
+            const locked = normalizeHex(slotColorLock[sym]);
+            if (locked) return locked;
+            const used = new Set(Object.values(slotColorLock).map((v) => normalizeHex(v)).filter(Boolean));
+            const candidates = RANDOM_SYMBOL_COLOR_POOL.filter((hex) => !used.has(hex));
+            const chosen = normalizeHex(pickRandom(candidates.length ? candidates : RANDOM_SYMBOL_COLOR_POOL)) || '#64748B';
+            slotColorLock[sym] = chosen;
             saveSlotColorLock();
+            return chosen;
+        }
+
+        function colorFromHex(hex) {
+            const norm = normalizeHex(hex) || '#64748B';
+            if (slotColorStyleCache[norm]) return slotColorStyleCache[norm];
+            const style = {
+                hex: norm,
+                iconBg: norm,
+                iconText: getReadableTextColor(norm),
+                borderColor: rgbaFromHex(norm, 0.38),
+                glowShadow: `0 0 18px 3px ${rgbaFromHex(norm, 0.22)}, inset 0 0 18px 3px ${rgbaFromHex(norm, 0.06)}`,
+                chartActiveBg: rgbaFromHex(norm, 0.22),
+                chartActiveBorder: rgbaFromHex(norm, 0.58),
+                chartIdleBorder: rgbaFromHex(norm, 0.28),
+                chartText: rgbaFromHex(norm, 0.95),
+            };
+            slotColorStyleCache[norm] = style;
+            return style;
+        }
+
+        function getCardShellStyle(sc) {
+            return `border-color:${sc.borderColor};box-shadow:${sc.glowShadow};`;
+        }
+
+        function getIconStyle(sc) {
+            return `background-color:${sc.iconBg};color:${sc.iconText};`;
+        }
+
+        function getChartButtonStyle(symbol, isActive) {
+            const sc = getSlotColor(symbol);
+            if (isActive) {
+                return `background-color:${sc.chartActiveBg};border:1px solid ${sc.chartActiveBorder};color:${sc.iconBg};`;
+            }
+            return `background-color:transparent;border:1px solid ${sc.chartIdleBorder};color:${sc.chartText};`;
         }
 
         function getSlotColor(symbol) {
             const sym = sanitizeSymbol(symbol || '');
-            if (!sym) return SLOT_COLORS[0];
-            syncSlotColorLock();
-            const idx = Number(slotColorLock[sym]);
-            if (Number.isInteger(idx) && idx >= 0 && idx < SLOT_COLORS.length) return SLOT_COLORS[idx];
-            const fixedIdx = FIXED_SYMBOL_COLOR_MAP[sym];
-            if (fixedIdx !== undefined) return SLOT_COLORS[fixedIdx];
-            return SLOT_COLORS[0];
+            if (!sym) return colorFromHex('#64748B');
+            const fixedHex = normalizeHex(FIXED_SYMBOL_COLOR_MAP[sym]);
+            const hex = fixedHex || getOrAssignRandomSymbolColor(sym);
+            return colorFromHex(hex);
         }
 
         function getAbbr(symbol) { return symbol.slice(0, 2).toUpperCase(); }
@@ -1622,17 +1680,18 @@
             const safeSymbol = sanitizeSymbol(pos.symbol);
             const watchOnly = pos.watch_only === true;
             const sc = watchOnly ? WATCH_ONLY_CARD_COLOR : getSlotColor(safeSymbol);
-            const glowClass = sc.glow || '';
-            const borderClass = sc.border || 'border-slate-600';
-            const iconBg = sc.bg || 'bg-slate-600';
+            const cardClass = watchOnly ? (sc.border || 'border-slate-600/70') : 'border-slate-700/60';
+            const cardStyle = watchOnly ? '' : getCardShellStyle(sc);
+            const iconClass = watchOnly ? (sc.bg || 'bg-slate-700') : '';
+            const iconStyle = watchOnly ? '' : getIconStyle(sc);
             const iconText = watchOnly ? 'text-slate-300' : 'text-white';
             const titleText = watchOnly ? 'text-slate-300' : 'text-white';
             const abbr = getAbbr(safeSymbol);
             return `
-                <div class="position-card bg-slate-850 rounded-xl p-5 border ${borderClass} ${glowClass} transition-all" data-position-symbol="${safeSymbol}" draggable="true">
+                <div class="position-card bg-slate-850 rounded-xl p-5 border ${cardClass} transition-all" style="${cardStyle}" data-position-symbol="${safeSymbol}" draggable="true">
                     <div class="flex items-start justify-between mb-4">
                         <div class="flex items-center gap-3">
-                            <div data-field="icon" class="w-10 h-10 rounded-full ${iconBg} flex items-center justify-center text-sm font-bold ${iconText} shrink-0">${abbr}</div>
+                            <div data-field="icon" class="w-10 h-10 rounded-full ${iconClass} flex items-center justify-center text-sm font-bold ${iconText} shrink-0" style="${iconStyle}">${abbr}</div>
                             <div>
                                 <p data-field="symbol-title" class="text-lg font-bold ${titleText} leading-tight">${escapeHtml(safeSymbol)}</p>
                                 <p data-field="base-asset" class="text-xs text-slate-500"></p>
@@ -1681,9 +1740,10 @@
             const evalUsd = Number(pos.evlu_amt || (pos.quantity * pos.current_price) || 0);
             const plUsd = Number(pos.evlu_pfls || 0);
             const sc = watchOnly ? WATCH_ONLY_CARD_COLOR : getSlotColor(pos.symbol);
-            const glowClass = sc.glow || '';
-            const borderClass = sc.border || 'border-slate-600';
-            const iconBg = sc.bg || 'bg-slate-600';
+            const cardClass = watchOnly ? (sc.border || 'border-slate-600/70') : 'border-slate-700/60';
+            const cardStyle = watchOnly ? '' : getCardShellStyle(sc);
+            const iconClass = watchOnly ? (sc.bg || 'bg-slate-700') : '';
+            const iconStyle = watchOnly ? '' : getIconStyle(sc);
             const leverageText = getLeverageText(pos);
             const retBadgeBg = isPos ? 'bg-emerald-500/15 text-emerald-400' : (retRate < 0 ? 'bg-rose-500/15 text-rose-400' : 'bg-slate-700 text-slate-400');
             const evalDisplay = watchOnly
@@ -1701,10 +1761,12 @@
             const peakRateSign = peakRetRate >= 0 ? '+' : '';
             const peakRateColor = peakRetRate > 0 ? 'text-emerald-400' : (peakRetRate < 0 ? 'text-rose-400' : 'text-slate-400');
 
-            card.className = `position-card bg-slate-850 rounded-xl p-5 border ${borderClass} ${glowClass} transition-all`;
+            card.className = `position-card bg-slate-850 rounded-xl p-5 border ${cardClass} transition-all`;
+            card.style.cssText = cardStyle;
             const iconEl = card.querySelector('[data-field="icon"]');
             if (iconEl) {
-                iconEl.className = `w-10 h-10 rounded-full ${iconBg} flex items-center justify-center text-sm font-bold ${watchOnly ? 'text-slate-300' : 'text-white'} shrink-0`;
+                iconEl.className = `w-10 h-10 rounded-full ${iconClass} flex items-center justify-center text-sm font-bold ${watchOnly ? 'text-slate-300' : 'text-white'} shrink-0`;
+                iconEl.style.cssText = iconStyle;
                 iconEl.textContent = getAbbr(pos.symbol);
             }
             const symbolTitleEl = card.querySelector('[data-field="symbol-title"]');
@@ -2248,7 +2310,9 @@
             const badge = document.getElementById('sellModalBadge');
             const sellSc = getSlotColor(symbol);
             badge.textContent = getAbbr(symbol);
-            badge.className = `w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black text-white ${sellSc.bg || 'bg-slate-600'}`;
+            badge.className = 'w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black';
+            badge.style.backgroundColor = sellSc.iconBg;
+            badge.style.color = sellSc.iconText;
 
             document.getElementById('sellModalTitle').textContent = symbol;
             document.getElementById('sellModalPercent').textContent = `${percent}%`;
@@ -2440,6 +2504,8 @@
                 const amtDisplay = showKrw ? fmtKrw(amount * rate) : fmtUsd(amount);
                 const time = parts[1] || '';
                 const symbol = sanitizeSymbol(t.symbol);
+                const symbolSc = getSlotColor(symbol);
+                const symbolChipStyle = `background-color:${symbolSc.iconBg};color:${symbolSc.iconText};`;
                 const reason = escapeHtml(String(t.reason || ''));
                 const qty = Math.max(0, Math.floor(Number(t.qty) || 0));
                 const price = Number(t.price || 0);
@@ -2454,7 +2520,7 @@
                         </div>
                         <div>
                             <div class="flex items-center gap-2">
-                                <span class="w-5 h-5 rounded ${getSlotColor(symbol).bg || 'bg-slate-600'} flex items-center justify-center text-[9px] font-black text-white leading-none">${getAbbr(symbol)}</span>
+                                <span class="w-5 h-5 rounded flex items-center justify-center text-[9px] font-black leading-none" style="${symbolChipStyle}">${getAbbr(symbol)}</span>
                                 <span class="text-sm font-bold text-white">${escapeHtml(symbol)}</span>
                                 <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${sideColor} ${sideBg}">${escapeHtml(side)}</span>
                             </div>
