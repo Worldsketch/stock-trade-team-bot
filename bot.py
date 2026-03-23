@@ -333,6 +333,7 @@ class TradingBot:
         # 무거운 잔고/포지션 동기화 주기와, 가벼운 스냅샷 발행 주기를 분리
         self._portfolio_sync_interval_sec: float = 5.0
         self._portfolio_sync_interval_idle_sec: float = 30.0
+        self._portfolio_sync_interval_weekend_sec: float = 300.0
         self._snapshot_publish_interval_sec: float = 1.0
         self._quote_refresh_interval_active_sec: float = 1.0
         self._quote_refresh_interval_idle_sec: float = 3.0
@@ -2850,8 +2851,14 @@ class TradingBot:
                     is_trade_session: bool = is_us_session or is_daytime_session
                     is_weekend_or_holiday: bool = (now_loop_et.weekday() >= 5) or self.is_us_market_holiday(now_loop_et)
                     if is_weekend_or_holiday and (not is_trade_session):
-                        # 주말/휴장일에는 불필요한 잔고/현재가 API 호출을 생략하고 스냅샷만 유지
-                        if (now_ts - self._last_live_snapshot_ts) >= self._snapshot_publish_interval_sec:
+                        # 주말/휴장일에는 호출량을 크게 줄이되, 상태 0 고착 방지를 위해 저주기 동기화는 유지
+                        if (now_ts - self._last_portfolio_sync_ts) >= self._portfolio_sync_interval_weekend_sec:
+                            try:
+                                self.sync_positions()
+                                self._publish_live_snapshot()
+                            except Exception as snapshot_error:
+                                self.log(f"[주말/휴장 동기화 오류] {snapshot_error}", send_tg=False)
+                        elif (now_ts - self._last_live_snapshot_ts) >= self._snapshot_publish_interval_sec:
                             self._publish_live_snapshot()
                         continue
                     if not is_trade_session:

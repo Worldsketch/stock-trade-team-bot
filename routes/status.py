@@ -134,6 +134,28 @@ def create_status_router(
                 snapshot_is_stale: bool = snapshot_age_sec > snapshot_stale_sec
                 active_slots = bot.slot_manager.get_active_slots()
                 slot_map: Dict[str, Dict[str, Any]] = {slot.get("symbol"): slot for slot in active_slots}
+                holding_slot_symbols = [
+                    str(slot.get("symbol", "")).upper()
+                    for slot in active_slots
+                    if slot.get("symbol") and (not bool(slot.get("watch_only", False)))
+                ]
+                # 스냅샷이 비정상(평가액 존재 + 보유 수량 전부 0)일 때는 즉시 재동기화 1회 시도
+                if holding_slot_symbols and float(bot_snapshot.get("tot_stck_evlu", 0.0) or 0.0) > 100:
+                    qty_by_symbol: Dict[str, float] = {
+                        str(p.get("symbol", "")).upper(): float(p.get("quantity", 0.0) or 0.0)
+                        for p in positions_list
+                        if p.get("symbol")
+                    }
+                    all_holdings_zero: bool = all(qty_by_symbol.get(sym, 0.0) <= 0.0 for sym in holding_slot_symbols)
+                    if all_holdings_zero:
+                        try:
+                            bot.refresh_live_snapshot()
+                            refreshed_snapshot = bot.get_live_snapshot(max_age_sec=8.0)
+                            if refreshed_snapshot:
+                                bot_snapshot = refreshed_snapshot
+                                positions_list = list(bot_snapshot.get("positions", []))
+                        except Exception:
+                            pass
                 existing_symbols = {str(p.get("symbol", "")).upper() for p in positions_list if p.get("symbol")}
                 quote_refresh_budget: int = 6
                 stale_price_candidates: Set[str] = set()
@@ -181,6 +203,9 @@ def create_status_router(
                         if snapshot_is_stale and allow_quote_refresh:
                             stale_price_candidates.add(symbol)
                         continue
+                    if watch_only and anchor_price > 0:
+                        position["current_price"] = anchor_price
+                        continue
                     if allow_quote_refresh:
                         stale_price_candidates.add(symbol)
 
@@ -190,6 +215,9 @@ def create_status_router(
                         continue
                     fallback_price: float = _get_cached_slot_price(symbol, now)
                     watch_only = bool(slot.get("watch_only", False))
+                    anchor_price: float = float(slot.get("anchor_price", 0.0) or 0.0)
+                    if watch_only and fallback_price <= 0 and anchor_price > 0:
+                        fallback_price = anchor_price
                     peak_price = float(slot.get("peak_price", slot.get("anchor_price", 0.0)) or 0.0)
                     all_time_high = float(slot.get("all_time_high", peak_price) or peak_price)
                     if allow_quote_refresh and fallback_price <= 0 and quote_refresh_budget > 0:
@@ -323,6 +351,8 @@ def create_status_router(
                         current_price = cached_price
                 slot_info = slot_map.get(symbol, {})
                 watch_only = bool(slot_info.get("watch_only", False))
+                if watch_only and current_price <= 0:
+                    current_price = float(slot_info.get("anchor_price", 0.0) or 0.0)
                 peak_price = float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0)
                 all_time_high = float(slot_info.get("all_time_high", peak_price) or peak_price)
                 base_symbol: str = slot_info.get("base_asset", symbol)
@@ -354,6 +384,9 @@ def create_status_router(
                 slot_info = slot_map.get(symbol, {})
                 fallback_price: float = _get_cached_slot_price(symbol, now)
                 watch_only = bool(slot_info.get("watch_only", False))
+                anchor_price: float = float(slot_info.get("anchor_price", 0.0) or 0.0)
+                if watch_only and fallback_price <= 0 and anchor_price > 0:
+                    fallback_price = anchor_price
                 peak_price = float(slot_info.get("peak_price", slot_info.get("anchor_price", 0.0)) or 0.0)
                 all_time_high = float(slot_info.get("all_time_high", peak_price) or peak_price)
                 base_symbol = slot_info.get("base_asset", symbol)

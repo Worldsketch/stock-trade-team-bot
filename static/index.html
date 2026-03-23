@@ -592,6 +592,9 @@
         let _watchRemoveTarget = '';
         let _lastWatchPriceBySymbol = new Map();
         let _queuedStatusRefreshTimer = null;
+        let _loginInFlight = false;
+        let _autoLoginTimer = null;
+        let _autoLoginLastSignature = '';
         const POLL_STATUS_NORMAL_MS = 2500;
         const POLL_STATUS_RISK_MS = 6000;
         const POLL_STATUS_IDLE_MS = 15000;
@@ -1019,13 +1022,41 @@
             return null;
         }
 
+        function queueAutoLoginTrigger(delayMs = 180) {
+            const modal = document.getElementById('loginModal');
+            if (!modal || modal.classList.contains('hidden')) return;
+            if (_loginInFlight) return;
+            const uEl = document.getElementById('username');
+            const pEl = document.getElementById('password');
+            const u = String(uEl?.value || '').trim();
+            const p = String(pEl?.value || '').trim();
+            if (!u || !p) return;
+            const signature = `${u}:${p.length}`;
+            if (_autoLoginLastSignature === signature) return;
+            if (_autoLoginTimer) clearTimeout(_autoLoginTimer);
+            _autoLoginTimer = setTimeout(() => {
+                _autoLoginTimer = null;
+                if (_loginInFlight) return;
+                const uu = String(document.getElementById('username')?.value || '').trim();
+                const pp = String(document.getElementById('password')?.value || '').trim();
+                if (!uu || !pp) return;
+                const nextSignature = `${uu}:${pp.length}`;
+                if (_autoLoginLastSignature === nextSignature) return;
+                _autoLoginLastSignature = nextSignature;
+                handleLogin();
+            }, Math.max(0, delayMs));
+        }
+
         async function handleLogin(e) {
-            e.preventDefault();
-            const u = document.getElementById('username').value;
-            const p = document.getElementById('password').value;
+            if (e && typeof e.preventDefault === 'function') e.preventDefault();
+            if (_loginInFlight) return;
+            const u = String(document.getElementById('username').value || '').trim();
+            const p = String(document.getElementById('password').value || '').trim();
+            if (!u || !p) return;
             const errEl = document.getElementById('loginError');
             errEl.classList.add('hidden');
             const token = 'Basic ' + btoa(u + ':' + p);
+            _loginInFlight = true;
             try {
                 const res = await fetch('/api/status', { headers: { 'Authorization': token } });
                 if (res.status === 401) {
@@ -1052,6 +1083,8 @@
             } catch(err) {
                 errEl.textContent = '서버 연결 실패';
                 errEl.classList.remove('hidden');
+            } finally {
+                _loginInFlight = false;
             }
         }
 
@@ -1059,6 +1092,8 @@
             const modal = document.getElementById('loginModal');
             if (!modal.classList.contains('hidden')) return;
             modal.classList.remove('hidden');
+            _autoLoginLastSignature = '';
+            queueAutoLoginTrigger(220);
         }
 
         function isPollRiskMode() {
@@ -3198,8 +3233,23 @@
 
         fetchAiReport();
         startAdaptivePolling();
+        (function initLoginAutoSubmit() {
+            const uEl = document.getElementById('username');
+            const pEl = document.getElementById('password');
+            const bind = (el) => {
+                if (!el) return;
+                el.addEventListener('input', () => queueAutoLoginTrigger(180));
+                el.addEventListener('change', () => queueAutoLoginTrigger(120));
+                el.addEventListener('blur', () => queueAutoLoginTrigger(80));
+            };
+            bind(uEl);
+            bind(pEl);
+            // 브라우저 자동완성 반영 지연 대응
+            setTimeout(() => queueAutoLoginTrigger(260), 450);
+        })();
         document.addEventListener('visibilitychange', () => {
             startAdaptivePolling();
+            queueAutoLoginTrigger(120);
         });
     </script>
 
