@@ -44,6 +44,15 @@ TRAILING_SELL_REPRICE_STEPS: List[Tuple[int, float]] = [
     (25, 0.012),  # 25초: 현재가 기준 -1.2%
 ]
 TRAILING_SELL_MONITOR_SEC: int = 300
+TAKE_PROFIT_SELL_INITIAL_DISCOUNT: float = 0.001  # -0.1%
+TAKE_PROFIT_SELL_REPRICE_STEPS: List[Tuple[int, float]] = [
+    (8, 0.002),    # 8초: 현재가 기준 -0.2%
+    (20, 0.003),   # 20초: 현재가 기준 -0.3%
+    (35, 0.0045),  # 35초: 현재가 기준 -0.45%
+    (55, 0.006),   # 55초: 현재가 기준 -0.6%
+    (90, 0.008),   # 90초: 현재가 기준 -0.8%
+]
+TAKE_PROFIT_SELL_MONITOR_SEC: int = 300
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,14}$")
 
 
@@ -57,6 +66,14 @@ def _parse_env_rate(name: str, default: float = 0.0) -> float:
         return max(0.0, value)
     except Exception:
         return max(0.0, default)
+
+
+def _parse_env_int(name: str, default: int = 0, min_value: int = 0) -> int:
+    try:
+        value = int(str(os.getenv(name, str(default))).strip())
+        return max(min_value, value)
+    except Exception:
+        return max(min_value, default)
 
 
 def _parse_env_float_list(name: str, default: List[float]) -> List[float]:
@@ -77,6 +94,48 @@ def _parse_env_float_list(name: str, default: List[float]) -> List[float]:
     if not values:
         return list(default)
     return sorted(set(values))
+
+
+def _parse_env_bool(name: str, default: bool = False) -> bool:
+    raw: str = str(os.getenv(name, "") or "").strip().lower()
+    if not raw:
+        return bool(default)
+    if raw in ("1", "true", "yes", "y", "on"):
+        return True
+    if raw in ("0", "false", "no", "n", "off"):
+        return False
+    return bool(default)
+
+
+def _parse_env_symbol_weights(name: str) -> Dict[str, float]:
+    raw: str = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return {}
+    out: Dict[str, float] = {}
+    for token in raw.split(","):
+        pair: str = token.strip()
+        if not pair:
+            continue
+        if ":" in pair:
+            sym_raw, weight_raw = pair.split(":", 1)
+        elif "=" in pair:
+            sym_raw, weight_raw = pair.split("=", 1)
+        else:
+            continue
+        sym: str = str(sym_raw or "").strip().upper()
+        if not _is_valid_symbol(sym):
+            continue
+        try:
+            weight: float = float(str(weight_raw or "").strip())
+        except Exception:
+            continue
+        if weight <= 0:
+            continue
+        # 33 또는 33.3 입력은 percent로 간주
+        if weight > 1.0:
+            weight /= 100.0
+        out[sym] = max(0.0, weight)
+    return out
 
 
 class SlotManager:
@@ -295,12 +354,44 @@ class TradingBot:
         # Strategy E: 총 자산 대비 비율 매수
         self.strategy_mode_file: str = "strategy_mode.json"
         self.strategy_modes: Dict[str, Dict[str, float]] = {
-            "aggressive": {"base": 0.001, "w2": 0.025, "w4": 0.045, "w8": 0.065},
-            "defensive":  {"base": 0.001, "w2": 0.012, "w4": 0.022, "w8": 0.032},
+            # no-additional-funding 운용 기준:
+            # defensive는 기존 보수 강도, aggressive는 과도한 배팅을 줄인 중간 강도.
+            "aggressive": {
+                "base": _parse_env_rate("STRATEGY_AGGRESSIVE_BASE", 0.0010),
+                "w2": _parse_env_rate("STRATEGY_AGGRESSIVE_W2", 0.018),
+                "w4": _parse_env_rate("STRATEGY_AGGRESSIVE_W4", 0.030),
+                "w8": _parse_env_rate("STRATEGY_AGGRESSIVE_W8", 0.042),
+            },
+            "defensive": {
+                "base": _parse_env_rate("STRATEGY_DEFENSIVE_BASE", 0.0005),
+                "w2": _parse_env_rate("STRATEGY_DEFENSIVE_W2", 0.008),
+                "w4": _parse_env_rate("STRATEGY_DEFENSIVE_W4", 0.014),
+                "w8": _parse_env_rate("STRATEGY_DEFENSIVE_W8", 0.020),
+            },
         }
+        self.auto_defensive_cash_ratio: float = min(1.0, _parse_env_rate("AUTO_DEFENSIVE_CASH_RATIO", 0.45))
+        self.auto_defensive_sma_count: int = _parse_env_int("AUTO_DEFENSIVE_SMA_COUNT", 2, min_value=1)
         self.auto_active_mode: str = "aggressive"
         self.strategy_mode: str = self._load_strategy_mode()
         self._apply_strategy_mode()
+        # 일일 총매수 상한(legacy 최대치). 실제 운용은 현금비중 기반 동적 상한을 적용합니다.
+        self.daily_buy_cap_ratio: float = min(1.0, _parse_env_rate("DAILY_BUY_CAP_RATIO", 0.12))
+        # 적립식 기본매수: 하루 1회 고정 수량 매수 (기본 1주)
+        self.daily_fixed_buy_qty: int = _parse_env_int("DAILY_FIXED_BUY_QTY", 1, min_value=1)
+        self.cash_floor_hard_ratio: float = min(1.0, _parse_env_rate("CASH_FLOOR_HARD_RATIO", 0.30))
+        self.cash_floor_soft_ratio: float = max(
+            self.cash_floor_hard_ratio,
+            min(1.0, _parse_env_rate("CASH_FLOOR_SOFT_RATIO", 0.45)),
+        )
+        self.buy_cap_high_cash_trigger: float = max(
+            self.cash_floor_soft_ratio,
+            min(1.0, _parse_env_rate("BUY_CAP_HIGH_CASH_TRIGGER", 0.55)),
+        )
+        self.buy_cap_ratio_high_cash: float = min(1.0, _parse_env_rate("BUY_CAP_RATIO_HIGH_CASH", 0.08))
+        self.buy_cap_ratio_mid_cash: float = min(1.0, _parse_env_rate("BUY_CAP_RATIO_MID_CASH", 0.04))
+        self.buy_cap_ratio_low_cash: float = min(1.0, _parse_env_rate("BUY_CAP_RATIO_LOW_CASH", 0.02))
+        # 예: TARGET_WEIGHTS=TSLL:0.34,TQQQ:0.33,NVDL:0.33 (미설정 시 동일비중)
+        self.target_symbol_weights: Dict[str, float] = _parse_env_symbol_weights("TARGET_WEIGHTS")
         
         # 포지션 DataFrame 초기화 (슬롯 기반 동적 구성)
         self.positions: pd.DataFrame = pd.DataFrame(
@@ -396,6 +487,22 @@ class TradingBot:
             [20.0, 30.0, 45.0],
         )
         self._profit_alert_state: Dict[str, Dict[str, Any]] = {}
+        self.auto_take_profit_enabled: bool = _parse_env_bool("AUTO_TAKE_PROFIT_ENABLED", True)
+        self._take_profit_levels: List[float] = _parse_env_float_list(
+            "AUTO_TAKE_PROFIT_LEVELS",
+            [12.0, 20.0, 30.0],
+        )
+        self._take_profit_sell_pcts: List[float] = _parse_env_float_list(
+            "AUTO_TAKE_PROFIT_SELL_PCTS",
+            [0.15, 0.20, 0.25],
+        )
+        self.take_profit_cooldown_sec: float = _parse_env_rate("AUTO_TAKE_PROFIT_COOLDOWN_SEC", 300.0)
+        self._take_profit_rules: List[Tuple[float, float]] = self._build_take_profit_rules(
+            self._take_profit_levels,
+            self._take_profit_sell_pcts,
+        )
+        self._take_profit_state: Dict[str, Dict[str, Any]] = {}
+        self._take_profit_cooldown_until: Dict[str, float] = {}
 
         self._nyse_cal = xcals.get_calendar("XNYS")
 
@@ -691,14 +798,24 @@ class TradingBot:
             print(f"[daily_state 저장 오류] {e}")
 
     def _load_strategy_mode(self) -> str:
+        valid_modes: Set[str] = {"auto", "aggressive", "defensive"}
+        default_mode: str = str(os.getenv("DEFAULT_STRATEGY_MODE", "auto") or "auto").strip().lower()
+        if default_mode == "conservative":
+            default_mode = "defensive"
+        if default_mode not in valid_modes:
+            default_mode = "auto"
         try:
             if os.path.exists(self.strategy_mode_file):
                 with open(self.strategy_mode_file, 'r', encoding='utf-8') as f:
                     data: Dict[str, str] = json.load(f)
-                    return data.get("mode", "auto")
+                    mode: str = str(data.get("mode", default_mode) or default_mode).strip().lower()
+                    if mode == "conservative":
+                        return "defensive"
+                    if mode in valid_modes:
+                        return mode
         except Exception:
             pass
-        return "auto"
+        return default_mode
 
     def _apply_strategy_mode(self) -> None:
         active: str = self.strategy_mode if self.strategy_mode in self.strategy_modes else self.auto_active_mode
@@ -708,7 +825,117 @@ class TradingBot:
         self.w4_ratio: float = ratios["w4"]
         self.w8_ratio: float = ratios["w8"]
 
+    def _build_take_profit_rules(self, levels: List[float], sell_pcts: List[float]) -> List[Tuple[float, float]]:
+        rules: List[Tuple[float, float]] = []
+        for lv, raw_pct in zip(levels, sell_pcts):
+            level: float = float(lv or 0.0)
+            pct: float = float(raw_pct or 0.0)
+            if level <= 0 or pct <= 0:
+                continue
+            if pct > 1.0:
+                pct /= 100.0
+            pct = min(1.0, max(0.0, pct))
+            if pct <= 0:
+                continue
+            rules.append((level, pct))
+        rules.sort(key=lambda x: x[0])
+        if rules:
+            return rules
+        return [(12.0, 0.15), (20.0, 0.20), (30.0, 0.25)]
+
+    def _calc_cash_ratio(self, total_equity: float = 0.0) -> float:
+        equity: float = total_equity if total_equity > 0 else self._calc_total_equity()
+        if equity <= 0:
+            return 1.0
+        return self.last_usd_balance / equity
+
+    def _resolve_daily_buy_cap_ratio(self, total_equity: float = 0.0) -> Tuple[float, float, str]:
+        cash_ratio: float = self._calc_cash_ratio(total_equity)
+        selected: float = self.buy_cap_ratio_high_cash
+        reason: str = "high_cash"
+        if cash_ratio <= self.cash_floor_hard_ratio:
+            selected = 0.0
+            reason = "hard_floor"
+        elif cash_ratio <= self.cash_floor_soft_ratio:
+            selected = self.buy_cap_ratio_low_cash
+            reason = "soft_floor"
+        elif cash_ratio <= self.buy_cap_high_cash_trigger:
+            selected = self.buy_cap_ratio_mid_cash
+            reason = "mid_cash"
+        effective: float = min(self.daily_buy_cap_ratio, selected)
+        return max(0.0, effective), cash_ratio, reason
+
+    def _resolve_symbol_target_weights(self, symbols: List[str]) -> Dict[str, float]:
+        active: List[str] = [str(sym or "").upper() for sym in symbols if str(sym or "").strip()]
+        if not active:
+            return {}
+
+        configured: Dict[str, float] = {
+            sym: float(w)
+            for sym, w in self.target_symbol_weights.items()
+            if sym in active and float(w or 0.0) > 0
+        }
+        if not configured:
+            equal_weight: float = 1.0 / float(len(active))
+            return {sym: equal_weight for sym in active}
+
+        configured_sum: float = sum(configured.values())
+        missing: List[str] = [sym for sym in active if sym not in configured]
+        weights: Dict[str, float] = {}
+        if configured_sum >= 1.0:
+            for sym in active:
+                weights[sym] = configured.get(sym, 0.0) / configured_sum
+        else:
+            remain: float = max(0.0, 1.0 - configured_sum)
+            missing_share: float = (remain / float(len(missing))) if missing else 0.0
+            for sym in active:
+                weights[sym] = configured.get(sym, missing_share)
+
+        total: float = sum(weights.values())
+        if total <= 0:
+            equal_weight = 1.0 / float(len(active))
+            return {sym: equal_weight for sym in active}
+        return {sym: float(w) / total for sym, w in weights.items()}
+
+    def _get_underweight_priority_symbols(self, symbols: Optional[List[str]] = None) -> List[str]:
+        active: List[str] = list(symbols or self.symbols)
+        if len(active) <= 1:
+            return active
+
+        target_weights: Dict[str, float] = self._resolve_symbol_target_weights(active)
+        total_equity: float = self._calc_total_equity()
+        if total_equity <= 0:
+            return active
+
+        idx_map: Dict[str, int] = {sym: i for i, sym in enumerate(active)}
+        current_values: Dict[str, float] = {sym: 0.0 for sym in active}
+        if not self.positions.empty:
+            for sym in active:
+                mask: pd.Series = self.positions["symbol"] == sym
+                if not mask.any():
+                    continue
+                qty: float = float(self.positions.loc[mask, "quantity"].values[0] or 0.0)
+                if qty <= 0:
+                    continue
+                current_price: float = float(self.positions.loc[mask, "current_price"].values[0] or 0.0)
+                avg_price: float = float(self.positions.loc[mask, "avg_price"].values[0] or 0.0)
+                price: float = current_price if current_price > 0 else avg_price
+                if price <= 0:
+                    continue
+                current_values[sym] = qty * price
+
+        def _sort_key(sym: str) -> Tuple[float, int]:
+            target_w: float = float(target_weights.get(sym, 0.0) or 0.0)
+            current_w: float = float(current_values.get(sym, 0.0) or 0.0) / total_equity
+            underweight_gap: float = target_w - current_w
+            # gap이 큰(더 부족한) 종목을 먼저, 동률이면 기존 슬롯 순서를 유지
+            return (-underweight_gap, idx_map.get(sym, 9999))
+
+        return sorted(active, key=_sort_key)
+
     def set_strategy_mode(self, mode: str) -> bool:
+        if mode == "conservative":
+            mode = "defensive"
         if mode not in ("auto", "aggressive", "defensive"):
             return False
         self.strategy_mode = mode
@@ -720,7 +947,11 @@ class TradingBot:
                 json.dump({"mode": mode}, f)
         except Exception as e:
             self.log(f"[전략 모드 저장 오류] {e}")
-        label_map: Dict[str, str] = {"auto": f"자동 (현재: {'공격적' if self.auto_active_mode == 'aggressive' else '방어적'})", "aggressive": "공격적", "defensive": "방어적"}
+        label_map: Dict[str, str] = {
+            "auto": f"자동 (현재: {'공격적' if self.auto_active_mode == 'aggressive' else '방어적'})",
+            "aggressive": "공격적",
+            "defensive": "방어적",
+        }
         self.log(f"[전략 모드 변경] {label_map[mode]} 모드 적용")
         return True
 
@@ -732,11 +963,11 @@ class TradingBot:
         total_equity: float = self._calc_total_equity()
         if total_equity > 0:
             cash_ratio: float = self.last_usd_balance / total_equity
-            if cash_ratio <= 0.35:
+            if cash_ratio <= self.auto_defensive_cash_ratio:
                 should_defend = True
         current_symbols: List[str] = self.symbols
         below_sma200: int = sum(1 for sym in current_symbols if not self.is_uptrend.get(sym, True))
-        if below_sma200 >= 2:
+        if below_sma200 >= self.auto_defensive_sma_count:
             should_defend = True
         self.auto_active_mode = "defensive" if should_defend else "aggressive"
         if self.auto_active_mode != prev_active:
@@ -745,9 +976,9 @@ class TradingBot:
             reason: str = ""
             if should_defend:
                 reasons: list = []
-                if total_equity > 0 and self.last_usd_balance / total_equity <= 0.35:
+                if total_equity > 0 and self.last_usd_balance / total_equity <= self.auto_defensive_cash_ratio:
                     reasons.append(f"예수금 비중 {self.last_usd_balance / total_equity * 100:.1f}%")
-                if below_sma200 >= 2:
+                if below_sma200 >= self.auto_defensive_sma_count:
                     reasons.append(f"SMA200 하회 {below_sma200}종목")
                 reason = f" ({', '.join(reasons)})"
             self.send_telegram_message(f"🔄 [전략 자동 전환] {label} 모드{reason}")
@@ -786,7 +1017,8 @@ class TradingBot:
         if self.slot_manager.get_active_slots():
             return
         try:
-            data: Dict[str, Any] = self.api.get_balance_and_positions(symbols=self.symbols)
+            # 슬롯이 비어있을 때는 전체 보유를 조회해 초기 슬롯 자동등록 누락을 방지
+            data: Dict[str, Any] = self.api.get_balance_and_positions(symbols=["__ALL__"])
             held: List[Dict[str, Any]] = [p for p in data["positions"] if p.get("quantity", 0) > 0]
             if not held:
                 print("[자동 등록] 보유 종목이 없습니다.")
@@ -1136,6 +1368,9 @@ class TradingBot:
         self.hwm.pop(symbol, None)
         self._save_hwm()
         self.daily_state.pop(symbol, None)
+        self._profit_alert_state.pop(symbol, None)
+        self._take_profit_state.pop(symbol, None)
+        self._take_profit_cooldown_until.pop(symbol, None)
         self._save_daily_state()
         self._rebuild_positions_df()
 
@@ -2036,14 +2271,19 @@ class TradingBot:
             if self.display_exchange_rate <= 0:
                 self.display_exchange_rate = api_exrt
 
-        api_krw: float = data.get("krw_balance", 0.0)
-        if api_krw > 0:
-            self.last_krw_balance = api_krw
-        else:
-            self.last_krw_balance = self.last_usd_balance * self.exchange_rate
         api_krw_cash: float = data.get("krw_cash", 0.0)
         if api_krw_cash >= 0:
             self.last_krw_cash = api_krw_cash
+        # KRW 표시 예수금은 "USD 예수금 환산 + 원화 현금"을 우선 사용합니다.
+        # (inquire-psbl-order의 max_buy_amt 값은 해외 운용 시 잔돈처럼 작게 내려올 수 있음)
+        api_krw: float = data.get("krw_balance", 0.0)
+        converted_krw: float = self.last_usd_balance * self.exchange_rate
+        if converted_krw > 0:
+            self.last_krw_balance = converted_krw + max(0.0, self.last_krw_cash)
+        elif api_krw > 0:
+            self.last_krw_balance = api_krw
+        else:
+            self.last_krw_balance = 0.0
 
         new_evlu_pfls: float = data.get("tot_evlu_pfls", 0.0)
         new_pchs_amt: float = data.get("tot_pchs_amt", 0.0)
@@ -2171,6 +2411,9 @@ class TradingBot:
             self.prev_close.pop(sym, None)
             self.hwm.pop(sym, None)
             self.daily_state.pop(sym, None)
+            self._profit_alert_state.pop(sym, None)
+            self._take_profit_state.pop(sym, None)
+            self._take_profit_cooldown_until.pop(sym, None)
             self.log(f"🗑️ [자동 정리] {sym} 보유 0주 → 슬롯 자동 제거", send_tg=True)
 
         if to_remove:
@@ -2182,6 +2425,8 @@ class TradingBot:
         self.sync_positions()
         if self.positions.empty:
             self._profit_alert_state.clear()
+            self._take_profit_state.clear()
+            self._take_profit_cooldown_until.clear()
             self._publish_live_snapshot()
             if not self._sync_logged:
                 self.log(f"데이터 동기화 완료 | 예수금: ${self.last_usd_balance:.2f} (슬롯 없음)", print_stdout=False)
@@ -2245,16 +2490,153 @@ class TradingBot:
                 self._check_profit_target_alert(symbol, price, qty, avg_price, return_rate)
                 self.update_hwm(symbol, price)
                 if self.is_regular_market_open(now_et):
-                    self.check_trailing_stop(symbol, price, qty)
+                    tp_ordered: bool = self.check_take_profit_auto_sell(
+                        symbol=symbol,
+                        current_price=price,
+                        qty=qty,
+                        avg_price=avg_price,
+                        return_rate=return_rate,
+                    )
+                    if not tp_ordered:
+                        self.check_trailing_stop(symbol, price, qty)
             else:
                 self._profit_alert_state.pop(symbol, None)
+                self._take_profit_state.pop(symbol, None)
+                self._take_profit_cooldown_until.pop(symbol, None)
 
         # 슬롯 제거된 심볼의 알림 상태 정리
         active_symbols: Set[str] = set(self.symbols)
         stale_symbols: List[str] = [sym for sym in self._profit_alert_state.keys() if sym not in active_symbols]
         for stale_symbol in stale_symbols:
             self._profit_alert_state.pop(stale_symbol, None)
-        
+        stale_tp_symbols: List[str] = [sym for sym in self._take_profit_state.keys() if sym not in active_symbols]
+        for stale_symbol in stale_tp_symbols:
+            self._take_profit_state.pop(stale_symbol, None)
+            self._take_profit_cooldown_until.pop(stale_symbol, None)
+
+    def _calc_partial_sell_qty(self, qty: float, sell_pct: float) -> int:
+        whole_qty: int = int(qty)
+        if whole_qty <= 1:
+            return 0
+        candidate: int = max(1, int(whole_qty * sell_pct))
+        return min(candidate, whole_qty - 1)
+
+    def check_take_profit_auto_sell(
+        self,
+        symbol: str,
+        current_price: float,
+        qty: float,
+        avg_price: float,
+        return_rate: float,
+    ) -> bool:
+        if (not self.auto_take_profit_enabled) or (not self._take_profit_rules):
+            return False
+        if qty <= 0 or avg_price <= 0 or current_price <= 0:
+            self._take_profit_state.pop(symbol, None)
+            self._take_profit_cooldown_until.pop(symbol, None)
+            return False
+
+        now_ts: float = time.time()
+        cooldown_until: float = float(self._take_profit_cooldown_until.get(symbol, 0.0) or 0.0)
+        if now_ts < cooldown_until:
+            return False
+
+        state: Optional[Dict[str, Any]] = self._take_profit_state.get(symbol)
+        if state is None:
+            self._take_profit_state[symbol] = {
+                "last_qty": qty,
+                "last_avg": avg_price,
+                "hit": [lv for lv, _ in self._take_profit_rules if return_rate >= lv],
+            }
+            return False
+
+        last_qty: float = float(state.get("last_qty", qty) or qty)
+        last_avg: float = float(state.get("last_avg", avg_price) or avg_price)
+        hit_levels: Set[float] = set(float(v) for v in state.get("hit", []))
+
+        # 추가 매수로 평단/수량이 바뀌면 현재 수익구간 기준으로 hit 상태를 재평가합니다.
+        qty_increased: bool = qty > (last_qty + max(1e-6, last_qty * 0.001))
+        avg_changed: bool = abs(avg_price - last_avg) > max(0.01, last_avg * 0.003)
+        if qty_increased and avg_changed:
+            hit_levels = set(lv for lv, _ in self._take_profit_rules if return_rate >= lv)
+
+        now_et: datetime = self.get_eastern_time()
+        now_kst: datetime = self.get_korean_time()
+        prefer_daytime: bool = self.is_daytime_market_open(now_kst) and (not self.is_active_trading_time(now_et))
+
+        for level, sell_pct in self._take_profit_rules:
+            if return_rate < level or level in hit_levels:
+                continue
+            sell_qty: int = self._calc_partial_sell_qty(qty, sell_pct)
+            if sell_qty <= 0:
+                continue
+            sell_price: float = round(current_price * (1.0 - TAKE_PROFIT_SELL_INITIAL_DISCOUNT), 2)
+            if sell_price <= 0:
+                continue
+
+            success: bool = self.api.place_order(
+                symbol=symbol,
+                quantity=sell_qty,
+                price=sell_price,
+                is_buy=False,
+                prefer_daytime=prefer_daytime,
+            )
+            if not success:
+                self._take_profit_cooldown_until[symbol] = now_ts + 30.0
+                self._take_profit_state[symbol] = {
+                    "last_qty": qty,
+                    "last_avg": avg_price,
+                    "hit": sorted(hit_levels),
+                }
+                return False
+
+            sold_amount: float = sell_qty * sell_price
+            reason: str = f"[{self._get_mode_label()}] 자동 익절 +{level:.1f}% ({sell_pct*100:.0f}% 매도)"
+            self._log_trade(
+                symbol,
+                "매도",
+                sell_qty,
+                sell_price,
+                sold_amount,
+                reason,
+                avg_price=avg_price,
+                status="pending",
+                ordered_qty=sell_qty,
+            )
+            msg: str = (
+                f"🎯 [자동 부분익절 주문]\n"
+                f"종목: {symbol}\n"
+                f"조건: 수익률 {return_rate:+.2f}% (목표 +{level:.1f}% 도달)\n"
+                f"주문가/수량: ${sell_price:.2f} x {sell_qty}주 (보유의 {sell_pct*100:.0f}%)\n"
+                f"예상 금액: ${sold_amount:,.2f} (약 {sold_amount * self.exchange_rate:,.0f}원)\n"
+                f"방식: 추격형 지정가 (시작 -0.1%, 최대 -0.8%)"
+            )
+            self.send_telegram_message(msg)
+            self._start_trailing_sell_manager(
+                symbol=symbol,
+                total_qty=sell_qty,
+                initial_price=sell_price,
+                prefer_daytime=prefer_daytime,
+                label=f"자동 익절 +{level:.1f}%",
+                reprice_steps=TAKE_PROFIT_SELL_REPRICE_STEPS,
+                monitor_sec=TAKE_PROFIT_SELL_MONITOR_SEC,
+            )
+            hit_levels.add(level)
+            self._take_profit_cooldown_until[symbol] = now_ts + max(5.0, self.take_profit_cooldown_sec)
+            self._take_profit_state[symbol] = {
+                "last_qty": qty,
+                "last_avg": avg_price,
+                "hit": sorted(hit_levels),
+            }
+            return True
+
+        self._take_profit_state[symbol] = {
+            "last_qty": qty,
+            "last_avg": avg_price,
+            "hit": sorted(hit_levels),
+        }
+        return False
+
     def check_trailing_stop(self, symbol: str, current_price: float, qty: float) -> None:
         """Strategy E: HWM 하락 임계치 도달 시 부분 매도(추격형 지정가)"""
         hwm_price: float = self.hwm.get(symbol, 0.0)
@@ -2313,7 +2695,11 @@ class TradingBot:
     def _get_mode_label(self) -> str:
         if self.strategy_mode == "auto":
             return f"자동({'공격' if self.auto_active_mode == 'aggressive' else '방어'})"
-        return "공격" if self.strategy_mode == "aggressive" else "방어"
+        if self.strategy_mode == "aggressive":
+            return "공격"
+        if self.strategy_mode == "defensive":
+            return "방어"
+        return "방어"
 
     def _check_profit_target_alert(
         self,
@@ -2507,13 +2893,19 @@ class TradingBot:
         total_qty: int,
         initial_price: float,
         prefer_daytime: bool,
+        label: str = "트레일링 스탑",
+        reprice_steps: Optional[List[Tuple[int, float]]] = None,
+        monitor_sec: Optional[int] = None,
     ) -> None:
+        active_reprice_steps: List[Tuple[int, float]] = list(reprice_steps or TRAILING_SELL_REPRICE_STEPS)
+        active_monitor_sec: int = int(monitor_sec or TRAILING_SELL_MONITOR_SEC)
+
         def _worker() -> None:
             start_ts: float = time.time()
             last_price: float = initial_price
             last_remaining: int = total_qty
             try:
-                for after_sec, discount in TRAILING_SELL_REPRICE_STEPS:
+                for after_sec, discount in active_reprice_steps:
                     sleep_sec: float = after_sec - (time.time() - start_ts)
                     if sleep_sec > 0:
                         time.sleep(sleep_sec)
@@ -2531,10 +2923,10 @@ class TradingBot:
                             completed=True,
                         )
                         self.send_telegram_message(
-                            f"✅ [트레일링 스탑 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주\n"
+                            f"✅ [{label} 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주\n"
                             f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f}"
                         )
-                        self.log(f"✅ [트레일링 체결확인] {symbol} {filled_qty}주 @ ${last_price:.2f}", send_tg=False)
+                        self.log(f"✅ [{label} 체결확인] {symbol} {filled_qty}주 @ ${last_price:.2f}", send_tg=False)
                         return
 
                     try:
@@ -2576,19 +2968,19 @@ class TradingBot:
                     if reordered:
                         last_price = new_price
                         self.log(
-                            f"🔁 [트레일링 재호가] {symbol} 잔량 {remaining_qty}주 @ ${new_price:.2f} "
+                            f"🔁 [{label} 재호가] {symbol} 잔량 {remaining_qty}주 @ ${new_price:.2f} "
                             f"(현재가 기준 -{discount*100:.1f}%)",
                             send_tg=False,
                         )
                     else:
                         self.send_telegram_message(
-                            f"⚠️ [트레일링 재호가 실패]\n종목: {symbol}\n잔량: {remaining_qty}주\n"
+                            f"⚠️ [{label} 재호가 실패]\n종목: {symbol}\n잔량: {remaining_qty}주\n"
                             f"재주문가: ${new_price:.2f}\n수동으로 미체결 주문을 확인해주세요."
                         )
-                        self.log(f"⚠️ [트레일링 재호가 실패] {symbol} 잔량 {remaining_qty}주 @ ${new_price:.2f}", send_tg=False)
+                        self.log(f"⚠️ [{label} 재호가 실패] {symbol} 잔량 {remaining_qty}주 @ ${new_price:.2f}", send_tg=False)
                         return
 
-                while (time.time() - start_ts) < TRAILING_SELL_MONITOR_SEC:
+                while (time.time() - start_ts) < active_monitor_sec:
                     time.sleep(5)
                     orders = self.api.get_pending_orders(symbols=["__ALL__"])
                     pending = self._pick_pending_order(orders, symbol, "매도")
@@ -2603,10 +2995,10 @@ class TradingBot:
                             completed=True,
                         )
                         self.send_telegram_message(
-                            f"✅ [트레일링 스탑 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주\n"
+                            f"✅ [{label} 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주\n"
                             f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f}"
                         )
-                        self.log(f"✅ [트레일링 체결확인] {symbol} {filled_qty}주 @ ${last_price:.2f}", send_tg=False)
+                        self.log(f"✅ [{label} 체결확인] {symbol} {filled_qty}주 @ ${last_price:.2f}", send_tg=False)
                         return
                     try:
                         last_remaining = int(float(pending.get("remaining_qty", last_remaining)))
@@ -2622,19 +3014,28 @@ class TradingBot:
                     completed=False,
                 )
                 self.send_telegram_message(
-                    f"⏰ [트레일링 스탑 미체결]\n종목: {symbol}\n잔량: {last_remaining}주\n"
+                    f"⏰ [{label} 미체결]\n종목: {symbol}\n잔량: {last_remaining}주\n"
                     f"최근 주문가: ${last_price:.2f}\n5분간 완전 체결되지 않았습니다."
                 )
-                self.log(f"⏰ [트레일링 미체결] {symbol} 잔량 {last_remaining}주 @ ${last_price:.2f}", send_tg=False)
+                self.log(f"⏰ [{label} 미체결] {symbol} 잔량 {last_remaining}주 @ ${last_price:.2f}", send_tg=False)
             except Exception as e:
-                self.log(f"[트레일링 추격형 오류] {symbol}: {e}", send_tg=False)
+                self.log(f"[{label} 추격형 오류] {symbol}: {e}", send_tg=False)
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _place_calculated_order(self, symbol: str, price: float, target_budget: float, tier_name: str, buy_ratio: float = 0.0, prev_close: float = 0.0) -> bool:
+    def _place_calculated_order(
+        self,
+        symbol: str,
+        price: float,
+        target_budget: float,
+        tier_name: str,
+        buy_ratio: float = 0.0,
+        prev_close: float = 0.0,
+        allow_min_qty_override: bool = True,
+    ) -> float:
         buy_price: float = round(price * (1.0 + SMART_BUY_INITIAL_PREMIUM), 2)
         qty_to_buy: int = int(target_budget / buy_price)
-        if target_budget > 0 and qty_to_buy == 0:
+        if allow_min_qty_override and target_budget > 0 and qty_to_buy == 0:
             qty_to_buy = 1
 
         required_cash: float = qty_to_buy * buy_price
@@ -2687,30 +3088,31 @@ class TradingBot:
                     tg_msg += f"📦 보유: 총 {int(held_qty)}주 (평균 ${held_avg:.2f})\n"
                 tg_msg += f"🏦 잔여현금: ${self.last_usd_balance:,.2f} (약 {self.last_krw_balance/10000:,.0f}만원) | 남은 매수: {rem}회"
                 self.send_telegram_message(tg_msg)
+                return required_cash
             else:
                 self.log(f"❌ [{self._get_mode_label()}|{tier_name}] {symbol} 매수 실패: {qty_to_buy}주 (${required_cash:.2f})")
-
-            return success
-        return False
+                return 0.0
+        return 0.0
 
     def execute_strategy(self, now_et: datetime) -> None:
         """Strategy E: SMA200 필터 + 전일종가 기준 DCA + RSI<30 과매도 보너스"""
         if not self.is_regular_market_open(now_et):
             return
         
-        market_open_time: datetime = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-        morning_end_time: datetime = now_et.replace(hour=10, minute=0, second=0, microsecond=0)
-        market_close_soon: datetime = now_et.replace(hour=15, minute=50, second=0, microsecond=0)
-        
-        is_morning_session: bool = market_open_time <= now_et < morning_end_time
-        is_after_morning: bool = now_et >= morning_end_time
-        is_market_close_soon: bool = now_et >= market_close_soon
-
         total_equity: float = self.last_usd_balance
         if not self.positions.empty:
             total_equity += (self.positions['quantity'] * self.positions['current_price']).sum()
+        effective_buy_cap_ratio, cash_ratio, cap_reason = self._resolve_daily_buy_cap_ratio(total_equity)
+        daily_buy_cap_usd: float = total_equity * effective_buy_cap_ratio if effective_buy_cap_ratio > 0 else 0.0
+        daily_buy_used_usd: float = float(self.daily_state.get('daily_buy_used_usd', 0.0) or 0.0)
+        daily_buy_cap_alert_sent: bool = bool(self.daily_state.get('daily_buy_cap_alert_sent', False))
+        cash_floor_block_alert_sent: bool = bool(self.daily_state.get('cash_floor_block_alert_sent', False))
+        self.daily_state['daily_buy_cap_reason'] = cap_reason
+        self.daily_state['daily_buy_cap_ratio_effective'] = round(effective_buy_cap_ratio, 6)
+        self.daily_state['cash_ratio'] = round(cash_ratio, 6)
 
-        for symbol in self.symbols:
+        buy_priority_symbols: List[str] = self._get_underweight_priority_symbols(self.symbols)
+        for symbol in buy_priority_symbols:
             mask_sym: pd.Series = self.positions['symbol'] == symbol
             if not mask_sym.any():
                 continue
@@ -2725,27 +3127,92 @@ class TradingBot:
                 continue
                 
             state: Dict[str, Any] = self.daily_state.get(symbol, {'base': False, 't2': False, 't4': False, 't8': False, 'rsi_bonus': False, 'morning_low': 999999.0})
-            
-            if is_morning_session:
-                if state['morning_low'] == 999999.0 or price < state['morning_low']:
-                    state['morning_low'] = price
-            
+
             is_buy_allowed: bool = self.is_uptrend.get(symbol, False)
-            
-            # 1. 매일 1회 기본 적립 (SMA200 필터만 적용)
-            if not state['base'] and is_buy_allowed:
-                buy_now: bool = False
-                if is_after_morning and (state['morning_low'] == 999999.0 or price <= state['morning_low'] * 1.005):
-                    buy_now = True
-                if is_market_close_soon:
-                    buy_now = True
-                if buy_now:
-                    base_buy_amt: float = total_equity * self.base_buy_ratio
-                    if self._place_calculated_order(symbol, price, base_buy_amt, "매일 기본적립(저점)", buy_ratio=self.base_buy_ratio):
-                        state['base'] = True
-                        self.daily_state[symbol] = state
+
+            def _try_place_with_cap(target_budget: float, tier_name: str, buy_ratio: float = 0.0, prev_close_price: float = 0.0) -> float:
+                nonlocal daily_buy_used_usd, daily_buy_cap_alert_sent, cash_floor_block_alert_sent
+                if target_budget <= 0:
+                    return 0.0
+                if daily_buy_cap_usd <= 0:
+                    if cap_reason == "hard_floor" and (not cash_floor_block_alert_sent):
+                        self.log(
+                            f"🧱 [현금 바닥선 보호] 현금 비중 {cash_ratio*100:.1f}% ≤ 하한 {self.cash_floor_hard_ratio*100:.1f}% "
+                            f"→ 자동 매수 일시 중단",
+                            send_tg=True,
+                        )
+                        cash_floor_block_alert_sent = True
+                        self.daily_state['cash_floor_block_alert_sent'] = True
                         self._save_daily_state()
-                        total_equity = self.last_usd_balance + (self.positions['quantity'] * self.positions['current_price']).sum()
+                    return 0.0
+                budget: float = target_budget
+                remaining_daily_budget: float = max(0.0, daily_buy_cap_usd - daily_buy_used_usd)
+                if remaining_daily_budget <= 0:
+                    if not daily_buy_cap_alert_sent:
+                        self.log(
+                            f"🛑 [일일 매수 상한 도달] 오늘 자동매수 누적 ${daily_buy_used_usd:,.2f} / 상한 ${daily_buy_cap_usd:,.2f}",
+                            send_tg=True,
+                        )
+                        daily_buy_cap_alert_sent = True
+                        self.daily_state['daily_buy_cap_alert_sent'] = True
+                        self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
+                        self._save_daily_state()
+                    return 0.0
+                budget = min(budget, remaining_daily_budget)
+
+                # 자동 전략에서는 최소 1주 강제매수를 비활성화해 소자본 과매수를 방지
+                min_order_cash: float = round(price * (1.0 + SMART_BUY_INITIAL_PREMIUM), 2)
+                if budget < min_order_cash:
+                    return 0.0
+
+                spent_cash: float = self._place_calculated_order(
+                    symbol,
+                    price,
+                    budget,
+                    tier_name,
+                    buy_ratio=buy_ratio,
+                    prev_close=prev_close_price,
+                    allow_min_qty_override=False,
+                )
+                if spent_cash > 0:
+                    daily_buy_used_usd += spent_cash
+                    self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
+                return spent_cash
+
+            def _try_place_fixed_daily_shares(fixed_qty: int) -> float:
+                nonlocal daily_buy_used_usd
+                qty_fixed: int = int(max(1, fixed_qty))
+                buy_price: float = round(price * (1.0 + SMART_BUY_INITIAL_PREMIUM), 2)
+                required_cash: float = qty_fixed * buy_price
+                if required_cash <= 0:
+                    return 0.0
+                if self.last_usd_balance < required_cash:
+                    return 0.0
+                spent_cash: float = self._place_calculated_order(
+                    symbol,
+                    price,
+                    required_cash,
+                    f"매일 {qty_fixed}주 적립",
+                    buy_ratio=0.0,
+                    allow_min_qty_override=False,
+                )
+                if spent_cash > 0:
+                    daily_buy_used_usd += spent_cash
+                    self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
+                return spent_cash
+
+            # 1. 매일 1회 적립식 고정 수량 매수 (조건 없이 1주, 예수금 부족 시만 스킵)
+            if not state['base']:
+                spent_cash: float = _try_place_fixed_daily_shares(self.daily_fixed_buy_qty)
+                if spent_cash > 0:
+                    state['base'] = True
+                    self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
+                    self.daily_state['daily_buy_cap_alert_sent'] = daily_buy_cap_alert_sent
+                    self.daily_state[symbol] = state
+                    self._save_daily_state()
+                    total_equity = self.last_usd_balance + (self.positions['quantity'] * self.positions['current_price']).sum()
+                    effective_buy_cap_ratio, cash_ratio, cap_reason = self._resolve_daily_buy_cap_ratio(total_equity)
+                    daily_buy_cap_usd = total_equity * effective_buy_cap_ratio if effective_buy_cap_ratio > 0 else 0.0
             
             # 2. 전일종가 대비 당일 하락률 기준 DCA (SMA200 필터만 적용)
             prev_close: float = self.prev_close.get(symbol, 0.0)
@@ -2755,39 +3222,65 @@ class TradingBot:
                 if intraday_drop <= self.dca_2_threshold and not state['t2']:
                     w2_amt: float = total_equity * self.w2_ratio
                     reason_t2: str = f"-3% 물타기(전일종가 대비 {intraday_drop*100:.1f}%)"
-                    if self._place_calculated_order(symbol, price, w2_amt, reason_t2, buy_ratio=self.w2_ratio, prev_close=prev_close):
+                    spent_cash = _try_place_with_cap(w2_amt, reason_t2, buy_ratio=self.w2_ratio, prev_close_price=prev_close)
+                    if spent_cash > 0:
                         state['t2'] = True
+                        self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
+                        self.daily_state['daily_buy_cap_alert_sent'] = daily_buy_cap_alert_sent
                         self.daily_state[symbol] = state
                         self._save_daily_state()
                         total_equity = self.last_usd_balance + (self.positions['quantity'] * self.positions['current_price']).sum()
+                        effective_buy_cap_ratio, cash_ratio, cap_reason = self._resolve_daily_buy_cap_ratio(total_equity)
+                        daily_buy_cap_usd = total_equity * effective_buy_cap_ratio if effective_buy_cap_ratio > 0 else 0.0
                         
                 if intraday_drop <= self.dca_4_threshold and not state['t4']:
                     w4_amt: float = total_equity * self.w4_ratio
                     reason_t4: str = f"-5% 물타기(전일종가 대비 {intraday_drop*100:.1f}%)"
-                    if self._place_calculated_order(symbol, price, w4_amt, reason_t4, buy_ratio=self.w4_ratio, prev_close=prev_close):
+                    spent_cash = _try_place_with_cap(w4_amt, reason_t4, buy_ratio=self.w4_ratio, prev_close_price=prev_close)
+                    if spent_cash > 0:
                         state['t4'] = True
+                        self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
+                        self.daily_state['daily_buy_cap_alert_sent'] = daily_buy_cap_alert_sent
                         self.daily_state[symbol] = state
                         self._save_daily_state()
                         total_equity = self.last_usd_balance + (self.positions['quantity'] * self.positions['current_price']).sum()
+                        effective_buy_cap_ratio, cash_ratio, cap_reason = self._resolve_daily_buy_cap_ratio(total_equity)
+                        daily_buy_cap_usd = total_equity * effective_buy_cap_ratio if effective_buy_cap_ratio > 0 else 0.0
                         
                 if intraday_drop <= self.dca_8_threshold and not state['t8']:
                     w8_amt: float = total_equity * self.w8_ratio
                     reason_t8: str = f"-7% 물타기(전일종가 대비 {intraday_drop*100:.1f}%)"
-                    if self._place_calculated_order(symbol, price, w8_amt, reason_t8, buy_ratio=self.w8_ratio, prev_close=prev_close):
+                    spent_cash = _try_place_with_cap(w8_amt, reason_t8, buy_ratio=self.w8_ratio, prev_close_price=prev_close)
+                    if spent_cash > 0:
                         state['t8'] = True
+                        self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
+                        self.daily_state['daily_buy_cap_alert_sent'] = daily_buy_cap_alert_sent
                         self.daily_state[symbol] = state
                         self._save_daily_state()
                         total_equity = self.last_usd_balance + (self.positions['quantity'] * self.positions['current_price']).sum()
+                        effective_buy_cap_ratio, cash_ratio, cap_reason = self._resolve_daily_buy_cap_ratio(total_equity)
+                        daily_buy_cap_usd = total_equity * effective_buy_cap_ratio if effective_buy_cap_ratio > 0 else 0.0
             
             # 3. RSI<30 과매도 보너스 매수 (하루 1회, SMA200 무관)
             if qty > 0 and not state.get('rsi_bonus', False) and self.is_rsi_oversold.get(symbol, False):
                 rsi_amt: float = total_equity * self.w4_ratio
-                if self._place_calculated_order(symbol, price, rsi_amt, "⚡ RSI 과매도 보너스", buy_ratio=self.w4_ratio):
+                spent_cash = _try_place_with_cap(rsi_amt, "⚡ RSI 과매도 보너스", buy_ratio=self.w4_ratio)
+                if spent_cash > 0:
                     state['rsi_bonus'] = True
+                    self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
+                    self.daily_state['daily_buy_cap_alert_sent'] = daily_buy_cap_alert_sent
                     self.daily_state[symbol] = state
                     self._save_daily_state()
                     total_equity = self.last_usd_balance + (self.positions['quantity'] * self.positions['current_price']).sum()
+                    effective_buy_cap_ratio, cash_ratio, cap_reason = self._resolve_daily_buy_cap_ratio(total_equity)
+                    daily_buy_cap_usd = total_equity * effective_buy_cap_ratio if effective_buy_cap_ratio > 0 else 0.0
                         
+            self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
+            self.daily_state['daily_buy_cap_alert_sent'] = daily_buy_cap_alert_sent
+            self.daily_state['cash_floor_block_alert_sent'] = cash_floor_block_alert_sent
+            self.daily_state['daily_buy_cap_reason'] = cap_reason
+            self.daily_state['daily_buy_cap_ratio_effective'] = round(effective_buy_cap_ratio, 6)
+            self.daily_state['cash_ratio'] = round(cash_ratio, 6)
             self.daily_state[symbol] = state
 
     def close_all_positions(self) -> None:
@@ -2832,16 +3325,39 @@ class TradingBot:
                 
                 # 1. 날짜 변경 감지 및 상태 초기화 (미국 동부 시간 기준)
                 if self.daily_state.get('date') != today_str:
-                    self.daily_state = {'date': today_str, 'closing_report_sent': False, 'premarket_recheck_done': False}
+                    self.daily_state = {
+                        'date': today_str,
+                        'closing_report_sent': False,
+                        'premarket_recheck_done': False,
+                        'daily_buy_used_usd': 0.0,
+                        'daily_buy_cap_alert_sent': False,
+                        'cash_floor_block_alert_sent': False,
+                        'daily_buy_cap_reason': 'init',
+                        'daily_buy_cap_ratio_effective': 0.0,
+                        'cash_ratio': 1.0,
+                    }
                     for sym in self.symbols:
                         self.daily_state[sym] = {'base': False, 't2': False, 't4': False, 't8': False, 'rsi_bonus': False, 'morning_low': 999999.0}
                     self._save_daily_state()
                     self._sync_logged = False
-                    
                     if now_et.weekday() < 5:
                         self.check_trend_and_momentum()
                         self.update_exchange_rate()
                         self._send_premarket_briefing()
+                else:
+                    # 기존 daily_state 파일(구버전)에 신규 키가 없을 수 있어 런타임 기본값 보정
+                    if 'daily_buy_used_usd' not in self.daily_state:
+                        self.daily_state['daily_buy_used_usd'] = 0.0
+                    if 'daily_buy_cap_alert_sent' not in self.daily_state:
+                        self.daily_state['daily_buy_cap_alert_sent'] = False
+                    if 'cash_floor_block_alert_sent' not in self.daily_state:
+                        self.daily_state['cash_floor_block_alert_sent'] = False
+                    if 'daily_buy_cap_reason' not in self.daily_state:
+                        self.daily_state['daily_buy_cap_reason'] = "unknown"
+                    if 'daily_buy_cap_ratio_effective' not in self.daily_state:
+                        self.daily_state['daily_buy_cap_ratio_effective'] = 0.0
+                    if 'cash_ratio' not in self.daily_state:
+                        self.daily_state['cash_ratio'] = 1.0
 
                 # 1-1. 본장 30분 전(ET 09:00) 실시간 가격 기반 SMA200 재검수
                 if (now_et.weekday() < 5

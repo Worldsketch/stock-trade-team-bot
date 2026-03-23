@@ -71,7 +71,7 @@
                 <div class="flex items-center gap-2">
                     <a href="/" onclick="location.reload(); return false;" class="flex items-center gap-2 cursor-pointer">
                         <i class="fa-solid fa-bolt text-emerald-400 text-xl"></i>
-                        <span class="font-bold text-lg tracking-tight text-white">Stock Trade Bot</span>
+                        <span class="font-bold text-lg tracking-tight text-white">Stock Trade Team Bot</span>
                     </a>
                 </div>
                 <button id="soundToggle" class="hidden"></button>
@@ -445,7 +445,7 @@
                         <label class="block text-sm font-medium text-slate-300 mb-2">티커 검색</label>
                         <div class="flex gap-2">
                             <div class="flex-1 relative">
-                                <input type="text" id="tickerSearchInput" placeholder="종목명 또는 티커 입력 (예: apple, NVDL)" maxlength="20"
+                                <input type="text" id="tickerSearchInput" placeholder="종목명 또는 티커 입력 (예: apple, AAPL)" maxlength="20"
                                     class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 pr-10 text-white uppercase focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
                                     onkeydown="if(event.key==='Enter'){event.preventDefault();selectFirstOrSearch()}"
                                     oninput="onTickerInput(this.value)" autocomplete="off">
@@ -556,9 +556,8 @@
         let lwChart = null;
         let candleSeries = null;
         let volumeSeries = null;
-        const DEFAULT_INITIAL_CHART_SYMBOL = 'NVDL';
-        let currentChartSymbol = (localStorage.getItem('last_chart_symbol') || DEFAULT_INITIAL_CHART_SYMBOL).trim().toUpperCase();
-        if (!currentChartSymbol) currentChartSymbol = DEFAULT_INITIAL_CHART_SYMBOL;
+        const DEFAULT_INITIAL_CHART_SYMBOL = '';
+        let currentChartSymbol = sanitizeSymbol(localStorage.getItem('last_chart_symbol') || DEFAULT_INITIAL_CHART_SYMBOL);
         let currentChartPeriod = '1d';
         let currentChartInterval = '5m';
         const CHART_SESSION = 'all';
@@ -594,8 +593,6 @@
         let _slotRemoveTombstone = new Map();
         let _queuedStatusRefreshTimer = null;
         let _loginInFlight = false;
-        let _autoLoginTimer = null;
-        let _autoLoginLastSignature = '';
         const POLL_STATUS_NORMAL_MS = 2500;
         const POLL_STATUS_RISK_MS = 6000;
         const POLL_STATUS_IDLE_MS = 15000;
@@ -1026,47 +1023,73 @@
             return String(value ?? '').toUpperCase().replace(/[^A-Z0-9.\-]/g, '').slice(0, 15);
         }
 
+        const AUTH_TOKEN_KEY = 'bot_auth_token';
+        const AUTH_TOKEN_EXPIRES_AT_KEY = 'bot_auth_expires_at';
+        const AUTH_PERSIST_DAYS = 30;
+
         function clearAuthHeader() {
-            sessionStorage.removeItem('bot_auth_token');
-            localStorage.removeItem('bot_auth_token');
+            sessionStorage.removeItem(AUTH_TOKEN_KEY);
+            localStorage.removeItem(AUTH_TOKEN_KEY);
+            localStorage.removeItem(AUTH_TOKEN_EXPIRES_AT_KEY);
+        }
+
+        function saveAuthHeader(token) {
+            if (!token) return;
+            sessionStorage.setItem(AUTH_TOKEN_KEY, token);
+            try {
+                const expiresAt = Date.now() + (AUTH_PERSIST_DAYS * 24 * 60 * 60 * 1000);
+                localStorage.setItem(AUTH_TOKEN_KEY, token);
+                localStorage.setItem(AUTH_TOKEN_EXPIRES_AT_KEY, String(expiresAt));
+            } catch (_) {}
         }
 
         function getAuthHeader() {
-            const token = sessionStorage.getItem('bot_auth_token');
+            const token = sessionStorage.getItem(AUTH_TOKEN_KEY);
             if (token) return token;
-            // legacy migration: localStorage -> sessionStorage
-            const legacy = localStorage.getItem('bot_auth_token');
-            if (legacy) {
-                sessionStorage.setItem('bot_auth_token', legacy);
-                localStorage.removeItem('bot_auth_token');
-                return legacy;
+            const stored = localStorage.getItem(AUTH_TOKEN_KEY);
+            if (!stored) return null;
+            const expiresAtRaw = localStorage.getItem(AUTH_TOKEN_EXPIRES_AT_KEY);
+            const expiresAt = Number(expiresAtRaw || 0);
+            if (Number.isFinite(expiresAt) && expiresAt > 0 && Date.now() > expiresAt) {
+                clearAuthHeader();
+                return null;
             }
-            return null;
+            sessionStorage.setItem(AUTH_TOKEN_KEY, stored);
+            return stored;
         }
 
-        function queueAutoLoginTrigger(delayMs = 180) {
+        function hideLoginModal() {
             const modal = document.getElementById('loginModal');
-            if (!modal || modal.classList.contains('hidden')) return;
-            if (_loginInFlight) return;
-            const uEl = document.getElementById('username');
+            if (!modal) return;
+            modal.classList.add('hidden');
             const pEl = document.getElementById('password');
-            const u = String(uEl?.value || '').trim();
-            const p = String(pEl?.value || '').trim();
-            if (!u || !p) return;
-            const signature = `${u}:${p.length}`;
-            if (_autoLoginLastSignature === signature) return;
-            if (_autoLoginTimer) clearTimeout(_autoLoginTimer);
-            _autoLoginTimer = setTimeout(() => {
-                _autoLoginTimer = null;
-                if (_loginInFlight) return;
-                const uu = String(document.getElementById('username')?.value || '').trim();
-                const pp = String(document.getElementById('password')?.value || '').trim();
-                if (!uu || !pp) return;
-                const nextSignature = `${uu}:${pp.length}`;
-                if (_autoLoginLastSignature === nextSignature) return;
-                _autoLoginLastSignature = nextSignature;
-                handleLogin();
-            }, Math.max(0, delayMs));
+            if (pEl) pEl.value = '';
+        }
+
+        function focusLoginUsername() {
+            const uEl = document.getElementById('username');
+            if (uEl) uEl.focus();
+        }
+
+        function showLoginError(message) {
+            const errEl = document.getElementById('loginError');
+            if (!errEl) return;
+            errEl.textContent = message || '로그인 실패';
+            errEl.classList.remove('hidden');
+        }
+
+        function hideLoginError() {
+            const errEl = document.getElementById('loginError');
+            if (!errEl) return;
+            errEl.classList.add('hidden');
+        }
+
+        function showLogin() {
+            const modal = document.getElementById('loginModal');
+            if (!modal || !modal.classList.contains('hidden')) return;
+            modal.classList.remove('hidden');
+            hideLoginError();
+            focusLoginUsername();
         }
 
         async function handleLogin(e) {
@@ -1075,19 +1098,18 @@
             const u = String(document.getElementById('username').value || '').trim();
             const p = String(document.getElementById('password').value || '').trim();
             if (!u || !p) return;
-            const errEl = document.getElementById('loginError');
-            errEl.classList.add('hidden');
+            hideLoginError();
             const token = 'Basic ' + btoa(u + ':' + p);
             _loginInFlight = true;
             try {
                 const res = await fetch('/api/status', { headers: { 'Authorization': token } });
                 if (res.status === 401) {
-                    errEl.textContent = '아이디 또는 비밀번호가 올바르지 않습니다.';
-                    errEl.classList.remove('hidden');
+                    clearAuthHeader();
+                    showLoginError('아이디 또는 비밀번호가 올바르지 않습니다.');
                     return;
                 }
-                sessionStorage.setItem('bot_auth_token', token);
-                document.getElementById('loginModal').classList.add('hidden');
+                saveAuthHeader(token);
+                hideLoginModal();
                 const data = await res.json();
                 if (!data.error) {
                     lastData = data;
@@ -1103,19 +1125,10 @@
                     }
                 }
             } catch(err) {
-                errEl.textContent = '서버 연결 실패';
-                errEl.classList.remove('hidden');
+                showLoginError('서버 연결 실패');
             } finally {
                 _loginInFlight = false;
             }
-        }
-
-        function showLogin() {
-            const modal = document.getElementById('loginModal');
-            if (!modal.classList.contains('hidden')) return;
-            modal.classList.remove('hidden');
-            _autoLoginLastSignature = '';
-            queueAutoLoginTrigger(220);
         }
 
         function isPollRiskMode() {
@@ -1436,16 +1449,9 @@
             text: 'text-slate-300',
         };
 
-        // 슬롯 색상 고정 맵 (순서 변경과 무관하게 심볼 기준 고정)
+        // 슬롯 색상은 심볼 하드코딩 없이, 추가 순서를 기준으로 고정
         const SLOT_COLOR_LOCK_KEY = 'stb_slot_color_lock_v1';
-        const FIXED_SYMBOL_COLOR_MAP = {
-            'NVDL': 0, // green
-            'TSLL': 1, // red
-            'TQQQ': 2, // blue
-            'SOXL': 4, // amber
-            'UPRO': 3, // purple
-            'TECL': 5, // cyan
-        };
+        const FIXED_SYMBOL_COLOR_MAP = {};
         const ADDED_SLOT_COLOR_PRIORITY = [4, 3, 5, 0, 1, 2]; // amber, purple, cyan, ...
         let slotColorLock = {};
 
@@ -1470,7 +1476,7 @@
             const nextLock = {};
             const used = new Set();
 
-            // 1) 핵심 3종 + 고정 매핑 종목은 항상 고정 색상
+            // 1) 고정 매핑 종목(현재 없음)을 우선 배치
             slots.forEach((slot) => {
                 const sym = sanitizeSymbol(slot?.symbol || '');
                 if (!sym) return;
@@ -2533,17 +2539,22 @@
             html += '<div>';
             html += '<h3 class="text-sm font-semibold text-emerald-400 mb-3 flex items-center gap-2"><i class="fa-solid fa-cart-shopping"></i> 매수 전략</h3>';
             html += '<div class="bg-slate-850 rounded-lg p-4 border border-slate-700/50">';
-            html += mkRow('기본 적립 비율', `총 자산의 ${(p.base_buy_ratio*100).toFixed(1)}%`);
+            html += mkRow('기본 적립 수량', `하루 ${Number(p.daily_fixed_buy_qty || 1)}주`);
             html += mkRow(`${(p.dca_2_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w2_ratio*100).toFixed(1)}%`);
             html += mkRow(`${(p.dca_4_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w4_ratio*100).toFixed(1)}%`);
             html += mkRow(`${(p.dca_8_threshold*100).toFixed(0)}% DCA 비율`, `총 자산의 ${(p.w8_ratio*100).toFixed(1)}%`);
             html += mkRow('RSI 과매도 보너스', `총 자산의 ${(p.w4_ratio*100).toFixed(1)}% (RSI<30)`);
+            html += mkRow('일일 총매수 상한', `총 자산의 ${((p.daily_buy_cap_ratio || 0)*100).toFixed(1)}% (사용 ${fmtUsd(p.daily_buy_used_usd || 0)})`);
             html += mkRow('매수 주문 방식', '추격형 지정가 (시작 +0.1%)');
             html += '</div></div>';
 
             html += '<div>';
-            html += '<h3 class="text-sm font-semibold text-rose-400 mb-3 flex items-center gap-2"><i class="fa-solid fa-shield"></i> 매도 전략 (트레일링 스탑)</h3>';
+            html += '<h3 class="text-sm font-semibold text-rose-400 mb-3 flex items-center gap-2"><i class="fa-solid fa-shield"></i> 매도 전략 (익절 + 트레일링)</h3>';
             html += '<div class="bg-slate-850 rounded-lg p-4 border border-slate-700/50">';
+            const tpRules = (p.take_profit_rules || [])
+                .map(r => `+${Number(r.level || 0).toFixed(0)}%→${(Number(r.sell_pct || 0)*100).toFixed(0)}%`)
+                .join(', ');
+            html += mkRow('자동 부분익절', p.auto_take_profit_enabled ? (tpRules || '활성화') : '비활성화');
             html += mkRow('발동 조건', `HWM 대비 ${(p.trailing_stop_threshold*100).toFixed(0)}%`, 'text-rose-400');
             html += mkRow('매도 비율', `보유량의 ${(p.trailing_sell_pct*100).toFixed(0)}%`);
             html += mkRow('매도 지정가', '추격형 지정가 (시작 -0.5%)');
@@ -2569,6 +2580,7 @@
                 const statusBg = uptrend ? 'border-emerald-500/30' : 'border-rose-500/30';
                 const statusText = uptrend ? '🟢 SMA200 위 (매수 가능)' : '🔴 SMA200 아래 (매수 보류)';
                 const oversoldTag = oversold ? '<span class="text-xs text-amber-400 font-medium">⚡ RSI 과매도</span>' : '';
+                const smaDistText = `${smaDist >= 0 ? '+' : ''}${smaDist.toFixed(1)}`;
 
                 const etfPrice = (p.etf_current_price || {})[sym] || prevClose;
                 let trailingRows = '';
@@ -2592,7 +2604,7 @@
                     ${oversoldTag}
                     <div class="mt-3 pt-3 border-t border-slate-700/50 space-y-1">
                         <div class="flex justify-between"><span class="text-xs text-slate-500">${base} 현재가</span><span class="text-xs text-white font-semibold">$${bPrice.toFixed(2)}</span></div>
-                        <div class="flex justify-between"><span class="text-xs text-slate-500">${base} SMA200</span><span class="text-xs text-slate-300"><span class="${smaDist >= 5 ? 'text-emerald-400' : smaDist >= 0 ? 'text-amber-400' : 'text-rose-400'} font-semibold">${smaDist >= 5 ? '✅ 여유' : smaDist >= 0 ? '⚠️ 근접' : '🔴 아래'}</span> (현재가 대비 -${smaDist.toFixed(1)}%) $${bSma.toFixed(2)}</span></div>
+                        <div class="flex justify-between"><span class="text-xs text-slate-500">${base} SMA200</span><span class="text-xs text-slate-300"><span class="${smaDist >= 5 ? 'text-emerald-400' : smaDist >= 0 ? 'text-amber-400' : 'text-rose-400'} font-semibold">${smaDist >= 5 ? '✅ 여유' : smaDist >= 0 ? '⚠️ 근접' : '🔴 아래'}</span> (현재가 대비 ${smaDistText}%) $${bSma.toFixed(2)}</span></div>
                     </div>
                     <div class="mt-2 pt-2 border-t border-slate-700/30 space-y-1">
                         <div class="flex justify-between"><span class="text-xs text-slate-500">${sym} 현재가</span><span class="text-xs text-white font-semibold">$${etfPrice.toFixed(2)}</span></div>
@@ -3267,23 +3279,8 @@
 
         fetchAiReport();
         startAdaptivePolling();
-        (function initLoginAutoSubmit() {
-            const uEl = document.getElementById('username');
-            const pEl = document.getElementById('password');
-            const bind = (el) => {
-                if (!el) return;
-                el.addEventListener('input', () => queueAutoLoginTrigger(180));
-                el.addEventListener('change', () => queueAutoLoginTrigger(120));
-                el.addEventListener('blur', () => queueAutoLoginTrigger(80));
-            };
-            bind(uEl);
-            bind(pEl);
-            // 브라우저 자동완성 반영 지연 대응
-            setTimeout(() => queueAutoLoginTrigger(260), 450);
-        })();
         document.addEventListener('visibilitychange', () => {
             startAdaptivePolling();
-            queueAutoLoginTrigger(120);
         });
     </script>
 

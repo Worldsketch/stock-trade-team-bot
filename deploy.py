@@ -24,6 +24,7 @@ DEPLOY_FILES: list[str] = ["bot.py", "app.py", "api.py", "requirements.txt"]
 DEPLOY_STATIC: list[str] = ["static/index.html", "static/manifest.json", "static/sw.js"]
 DEPLOY_DIRS: list[str] = ["routes", "services"]
 TARGET: str = f"{USER}@{HOST}"
+SSH_COMMON_OPTS: str = "-o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
 
 def run(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -34,28 +35,29 @@ def run(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
 def upload_files() -> None:
     print(f"\n📦 파일 업로드 시작: {TARGET}:{DEPLOY_PATH}")
     print("\n📦 파일 업로드 중...")
+    run(f"ssh {SSH_COMMON_OPTS} {TARGET} 'mkdir -p {DEPLOY_PATH}'")
     for f in DEPLOY_FILES:
         if Path(f).exists():
-            run(f"scp -o ConnectTimeout=10 {f} {TARGET}:{DEPLOY_PATH}/{f}")
+            run(f"scp {SSH_COMMON_OPTS} {f} {TARGET}:{DEPLOY_PATH}/{f}")
     for f in DEPLOY_STATIC:
         if Path(f).exists():
             remote_dir: str = f"{DEPLOY_PATH}/{str(Path(f).parent)}"
-            run(f"ssh -o ConnectTimeout=10 {TARGET} 'mkdir -p {remote_dir}'")
-            run(f"scp -o ConnectTimeout=10 {f} {TARGET}:{DEPLOY_PATH}/{f}")
+            run(f"ssh {SSH_COMMON_OPTS} {TARGET} 'mkdir -p {remote_dir}'")
+            run(f"scp {SSH_COMMON_OPTS} {f} {TARGET}:{DEPLOY_PATH}/{f}")
     for d in DEPLOY_DIRS:
         if Path(d).exists():
-            run(f"ssh -o ConnectTimeout=10 {TARGET} 'mkdir -p {DEPLOY_PATH}/{d}'")
-            run(f"scp -o ConnectTimeout=10 -r {d} {TARGET}:{DEPLOY_PATH}/")
+            run(f"ssh {SSH_COMMON_OPTS} {TARGET} 'mkdir -p {DEPLOY_PATH}/{d}'")
+            run(f"scp {SSH_COMMON_OPTS} -r {d} {TARGET}:{DEPLOY_PATH}/")
     print("\n✅ 파일 업로드 완료")
 
 
 def restart_now() -> None:
     print("\n🔄 PM2 재시작 중...")
-    result = run(f"ssh -o ConnectTimeout=10 {TARGET} 'cd {DEPLOY_PATH} && pm2 restart trade-bot'")
+    result = run(f"ssh {SSH_COMMON_OPTS} {TARGET} 'cd {DEPLOY_PATH} && pm2 restart trade-bot'")
     print(result.stdout)
 
     print("\n✅ 재시작 완료!")
-    result = run(f"ssh -o ConnectTimeout=10 {TARGET} 'sleep 3 && pm2 status trade-bot'")
+    result = run(f"ssh {SSH_COMMON_OPTS} {TARGET} 'sleep 3 && pm2 status trade-bot'")
     print(result.stdout)
 
 
@@ -110,7 +112,7 @@ def schedule_restart(schedule: str, tz_name: str) -> None:
         f"pm2 status trade-bot >> \"$LOG\" 2>&1) >/dev/null 2>&1 & "
         f"echo $! > \"$PID\""
     )
-    run(f"ssh -o ConnectTimeout=10 {TARGET} {shlex.quote(remote_script)}")
+    run(f"ssh {SSH_COMMON_OPTS} {TARGET} {shlex.quote(remote_script)}")
     print(
         f"\n🕒 재시작 예약 완료: {target_dt.strftime('%Y-%m-%d %H:%M:%S %Z')} "
         f"(약 {delay_sec}초 후)"

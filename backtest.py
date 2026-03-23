@@ -1,19 +1,29 @@
 """
 Strategy E 백테스트: SMA200 필터 + DCA 357 + RSI 과매도 보너스 + 트레일링 스탑
 - 5년 일봉 데이터 (yfinance)
-- NVDL(2x NVDA), TSLL(2x TSLA), TQQQ(3x QQQ) 3종목 동시 운용
+- 임의의 미국 주식/ETF 멀티 심볼 운용
 - 초기 자본 $100,000 (약 1.4억 원)
 """
 
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import os
 from typing import Dict, List, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
 LEVERAGED_ETF_MAP: Dict[str, str] = {
     "NVDL": "NVDA", "TSLL": "TSLA", "TQQQ": "QQQ",
+    "SOXL": "SOXX", "UPRO": "SPY", "SPXL": "SPY",
+    "TECL": "XLK", "FAS": "XLF", "LABU": "XBI",
+    "TNA": "IWM", "UDOW": "DIA", "CURE": "XLV",
+    "NAIL": "ITB", "DFEN": "ITA", "FNGU": "NYFANG",
+    "AAPU": "AAPL", "MSFU": "MSFT", "AMZU": "AMZN",
+    "GGLL": "GOOG", "GOOU": "GOOG", "METU": "META", "CONL": "COIN",
+    "SQQQ": "QQQ", "SOXS": "SOXX", "SPXU": "SPY",
+    "TECS": "XLK", "FAZ": "XLF", "TZA": "IWM",
+    "WEBL": "DJUSTC", "BITX": "BTC",
 }
 
 INITIAL_CAPITAL: float = 100_000.0
@@ -34,9 +44,14 @@ TRAILING_SELL_PCT: float = 0.50
 
 AGGRESSIVE: Dict[str, float] = {"base": 0.001, "w3": 0.025, "w5": 0.045, "w7": 0.065}
 DEFENSIVE: Dict[str, float] = {"base": 0.001, "w3": 0.012, "w5": 0.022, "w7": 0.032}
+CONSERVATIVE: Dict[str, float] = {"base": 0.0005, "w3": 0.008, "w5": 0.014, "w7": 0.020}
 
 CASH_DEFEND_RATIO: float = 0.35
 SMA_DEFEND_COUNT: int = 2
+DAILY_BUY_CAP_RATIO: float = float(str(os.getenv("DAILY_BUY_CAP_RATIO", "0.12")).strip() or 0.12)
+DEFAULT_STRATEGY_MODE: str = str(os.getenv("DEFAULT_STRATEGY_MODE", "conservative")).strip().lower()
+if DEFAULT_STRATEGY_MODE not in ("auto", "aggressive", "defensive", "conservative"):
+    DEFAULT_STRATEGY_MODE = "conservative"
 
 
 @dataclass
@@ -84,12 +99,14 @@ class TradeRecord:
 @dataclass
 class BacktestEngine:
     symbols: List[str]
-    cash: float = INITIAL_CAPITAL
+    # 런타임에 변경된 INITIAL_CAPITAL을 반영하기 위해 default_factory 사용
+    cash: float = field(default_factory=lambda: INITIAL_CAPITAL)
     positions: Dict[str, Position] = field(default_factory=dict)
     hwm: Dict[str, float] = field(default_factory=dict)
     trades: List[TradeRecord] = field(default_factory=list)
     equity_curve: List[Dict] = field(default_factory=list)
-    mode: str = "aggressive"
+    strategy_mode: str = DEFAULT_STRATEGY_MODE
+    mode: str = "conservative"
 
     def total_equity(self, prices: Dict[str, float]) -> float:
         stock_val: float = sum(
@@ -103,7 +120,11 @@ class BacktestEngine:
         return self.cash / te if te > 0 else 1.0
 
     def get_ratios(self) -> Dict[str, float]:
-        return AGGRESSIVE if self.mode == "aggressive" else DEFENSIVE
+        if self.mode == "aggressive":
+            return AGGRESSIVE
+        if self.mode == "defensive":
+            return DEFENSIVE
+        return CONSERVATIVE
 
     def place_buy(self, symbol: str, price: float, amount: float, reason: str, date: str) -> bool:
         amount = min(amount, self.cash * 0.99)
@@ -163,6 +184,8 @@ def run_backtest(symbols: List[str], years: int = 5) -> BacktestEngine:
     print(f"Strategy E 백테스트 ({years}년)")
     print(f"종목: {', '.join(symbols)}")
     print(f"초기 자본: ${INITIAL_CAPITAL:,.0f}")
+    print(f"전략 모드: {DEFAULT_STRATEGY_MODE}")
+    print(f"일일 총매수 상한: 총자산의 {DAILY_BUY_CAP_RATIO*100:.1f}%")
     print(f"{'='*60}\n")
 
     print("[1/3] 데이터 다운로드 중...")
@@ -226,19 +249,40 @@ def run_backtest(symbols: List[str], years: int = 5) -> BacktestEngine:
 
         te: float = engine.total_equity(prices)
         cr: float = engine.cash_ratio(prices)
+        daily_buy_cap_usd: float = max(0.0, te * DAILY_BUY_CAP_RATIO)
+        daily_buy_used_usd: float = 0.0
 
-        below_sma: int = sum(
-            1 for sym in symbols
-            if sym in indicators and date in indicators[sym].index
-            and not bool(indicators[sym].loc[date, "is_uptrend"])
-        )
-        if cr <= CASH_DEFEND_RATIO or below_sma >= SMA_DEFEND_COUNT:
-            engine.mode = "defensive"
+        if engine.strategy_mode == "auto":
+            below_sma: int = sum(
+                1 for sym in symbols
+                if sym in indicators and date in indicators[sym].index
+                and not bool(indicators[sym].loc[date, "is_uptrend"])
+            )
+            if cr <= CASH_DEFEND_RATIO or below_sma >= SMA_DEFEND_COUNT:
+                engine.mode = "defensive"
+            else:
+                engine.mode = "aggressive"
         else:
-            engine.mode = "aggressive"
+            engine.mode = engine.strategy_mode
 
         ratios: Dict[str, float] = engine.get_ratios()
         daily_state: Dict[str, Dict[str, bool]] = {sym: {"base": False, "t3": False, "t5": False, "t7": False, "rsi": False} for sym in symbols}
+
+        def buy_with_cap(symbol: str, order_price: float, target_amount: float, reason: str) -> bool:
+            nonlocal daily_buy_used_usd, te
+            if target_amount <= 0 or order_price <= 0:
+                return False
+            remaining_cap: float = max(0.0, daily_buy_cap_usd - daily_buy_used_usd)
+            if remaining_cap <= 0:
+                return False
+            budget: float = min(target_amount, remaining_cap)
+            if budget < 1.0:
+                return False
+            ok: bool = engine.place_buy(symbol, order_price, budget, reason, date_str)
+            if ok:
+                daily_buy_used_usd += budget
+                te = engine.total_equity(prices)
+            return ok
 
         for sym in symbols:
             if sym not in indicators or date not in indicators[sym].index:
@@ -266,9 +310,8 @@ def run_backtest(symbols: List[str], years: int = 5) -> BacktestEngine:
             # Daily base buy
             if is_uptrend and not daily_state[sym]["base"]:
                 base_amt: float = te * ratios["base"]
-                if engine.place_buy(sym, price, base_amt, "기본적립", date_str):
+                if buy_with_cap(sym, price, base_amt, "기본적립"):
                     daily_state[sym]["base"] = True
-                    te = engine.total_equity(prices)
 
             # DCA tiers
             if pos.qty > 0 and is_uptrend and prev_close > 0:
@@ -278,22 +321,22 @@ def run_backtest(symbols: List[str], years: int = 5) -> BacktestEngine:
                     if intraday_drop <= threshold and not daily_state[sym][tier_name]:
                         dca_price: float = prev_close * (1 + threshold)
                         dca_amt: float = te * ratios[tier_keys[i]]
-                        if engine.place_buy(sym, dca_price, dca_amt, f"DCA {threshold*100:.0f}%", date_str):
+                        if buy_with_cap(sym, dca_price, dca_amt, f"DCA {threshold*100:.0f}%"):
                             daily_state[sym][tier_name] = True
-                            te = engine.total_equity(prices)
 
             # RSI oversold bonus
             if pos.qty > 0 and is_rsi_oversold and not daily_state[sym]["rsi"]:
                 rsi_amt: float = te * ratios["w5"]
-                if engine.place_buy(sym, price, rsi_amt, "RSI 과매도 보너스", date_str):
+                if buy_with_cap(sym, price, rsi_amt, "RSI 과매도 보너스"):
                     daily_state[sym]["rsi"] = True
-                    te = engine.total_equity(prices)
 
         engine.equity_curve.append({
             "date": date_str,
             "equity": engine.total_equity(prices),
             "cash": engine.cash,
             "mode": engine.mode,
+            "daily_buy_used_usd": daily_buy_used_usd,
+            "daily_buy_cap_usd": daily_buy_cap_usd,
         })
 
     return engine
@@ -339,6 +382,8 @@ def print_results(engine: BacktestEngine) -> None:
 
     defensive_days: int = len(eq[eq["mode"] == "defensive"])
     aggressive_days: int = len(eq[eq["mode"] == "aggressive"])
+    conservative_days: int = len(eq[eq["mode"] == "conservative"])
+    avg_daily_buy_used: float = float(eq["daily_buy_used_usd"].mean()) if "daily_buy_used_usd" in eq.columns else 0.0
 
     # Yearly returns
     eq["year"] = eq["date"].dt.year
@@ -386,6 +431,10 @@ def print_results(engine: BacktestEngine) -> None:
     print(f"\n⚙️ 전략 모드 통계")
     print(f"  공격 모드: {aggressive_days}일 ({aggressive_days/len(eq)*100:.1f}%)")
     print(f"  방어 모드: {defensive_days}일 ({defensive_days/len(eq)*100:.1f}%)")
+    print(f"  보수 모드: {conservative_days}일 ({conservative_days/len(eq)*100:.1f}%)")
+    print(f"\n🧱 일일 매수상한")
+    print(f"  상한 비율: {DAILY_BUY_CAP_RATIO*100:.1f}%")
+    print(f"  일평균 사용액: ${avg_daily_buy_used:,.2f}")
 
     if not trades_df.empty:
         dca_trades: pd.DataFrame = trades_df[trades_df["reason"].str.contains("DCA")]
@@ -424,7 +473,11 @@ data_cache: Dict[str, pd.DataFrame] = {}
 
 
 if __name__ == "__main__":
-    symbols: List[str] = ["NVDL", "TSLL", "TQQQ"]
+    raw_symbols: str = str(os.getenv("BACKTEST_SYMBOLS", "") or "").strip()
+    symbols: List[str] = [s.strip().upper() for s in raw_symbols.split(",") if s.strip()]
+    if not symbols:
+        # 특정 종목 편향을 줄이기 위한 중립 기본값(미국 대표 지수 ETF)
+        symbols = ["SPY", "QQQ", "IWM"]
 
     print("데이터 다운로드 중...")
     raw_data: Dict[str, pd.DataFrame] = download_data(symbols, years=5)

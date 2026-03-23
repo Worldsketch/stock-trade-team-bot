@@ -180,7 +180,7 @@ def create_slots_strategy_router(
         body = body or {}
         mode: str = body.get("mode", "")
         if bot.set_strategy_mode(mode):
-            return {"status": "ok", "mode": mode, "auto_active": bot.auto_active_mode}
+            return {"status": "ok", "mode": bot.strategy_mode, "auto_active": bot.auto_active_mode}
         return {"error": f"유효하지 않은 모드: {mode}"}
 
     @router.get("/api/slots")

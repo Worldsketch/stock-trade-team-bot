@@ -150,14 +150,58 @@ def _get_client_ip(request: Request) -> str:
     return "unknown"
 
 
+def _load_auth_users() -> Dict[str, str]:
+    # 1) ADMIN_USERS_JSON='{"user":"pass"}' 형식 우선
+    users_json: str = str(os.getenv("ADMIN_USERS_JSON", "")).strip()
+    if users_json:
+        try:
+            parsed = json.loads(users_json)
+            if isinstance(parsed, dict):
+                users: Dict[str, str] = {}
+                for raw_u, raw_p in parsed.items():
+                    u: str = str(raw_u).strip()
+                    p: str = str(raw_p)
+                    if u and p:
+                        users[u] = p
+                if users:
+                    return users
+        except Exception:
+            pass
+
+    # 2) ADMIN_USERS='user1:pass1,user2:pass2' 형식
+    users_csv: str = str(os.getenv("ADMIN_USERS", "")).strip()
+    if users_csv:
+        users: Dict[str, str] = {}
+        for pair in users_csv.split(","):
+            item: str = pair.strip()
+            if not item or ":" not in item:
+                continue
+            u, p = item.split(":", 1)
+            username: str = u.strip()
+            password: str = p.strip()
+            if username and password:
+                users[username] = password
+        if users:
+            return users
+
+    # 3) 하위호환: 단일 관리자 계정
+    admin_user: str = str(os.getenv("ADMIN_USERNAME", "")).strip()
+    admin_pass: str = str(os.getenv("ADMIN_PASSWORD", "")).strip()
+    if admin_user and admin_pass:
+        return {admin_user: admin_pass}
+    return {}
+
+
 def get_current_username(
     request: Request,
     credentials: HTTPBasicCredentials = Depends(security),
 ):
-    admin_user: str = os.getenv("ADMIN_USERNAME", "")
-    admin_pass: str = os.getenv("ADMIN_PASSWORD", "")
-    if not admin_user or not admin_pass:
-        raise HTTPException(status_code=500, detail="ADMIN_USERNAME/ADMIN_PASSWORD 환경변수가 설정되지 않았습니다.")
+    auth_users: Dict[str, str] = _load_auth_users()
+    if not auth_users:
+        raise HTTPException(
+            status_code=500,
+            detail="ADMIN_USERS(또는 ADMIN_USERS_JSON) / ADMIN_USERNAME+ADMIN_PASSWORD 환경변수가 설정되지 않았습니다.",
+        )
 
     ip: str = _get_client_ip(request)
     now_ts: float = time.time()
@@ -172,9 +216,18 @@ def get_current_username(
         remain: int = int(blocked_until - now_ts)
         raise HTTPException(status_code=429, detail=f"로그인 시도 제한 중입니다. {remain}초 후 다시 시도하세요.")
 
-    correct_username = secrets.compare_digest(credentials.username, admin_user)
-    correct_password = secrets.compare_digest(credentials.password, admin_pass)
-    if not (correct_username and correct_password):
+    input_username: str = str(credentials.username or "").strip()
+    input_password: str = str(credentials.password or "")
+    expected_password: Optional[str] = auth_users.get(input_username)
+    is_valid: bool = False
+    if expected_password is not None:
+        is_valid = secrets.compare_digest(input_password, expected_password)
+    else:
+        # username 미존재 시에도 짧은 비교를 수행해 응답 시간 편차를 줄인다.
+        fallback_pw: str = next(iter(auth_users.values()))
+        secrets.compare_digest(input_password, fallback_pw)
+
+    if not is_valid:
         time.sleep(0.15)
         with _auth_fail_lock:
             state = dict(_auth_fail_state.get(ip, {"count": 0.0, "first_ts": now_ts, "blocked_until": 0.0}))
@@ -196,7 +249,7 @@ def get_current_username(
         )
     with _auth_fail_lock:
         _auth_fail_state.pop(ip, None)
-    return credentials.username
+    return input_username
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -324,23 +377,47 @@ async def get_strategy_params(
                     pass
         _strategy_cache = {"market": {"base_price": base_price, "base_sma200": base_sma200, "etf_current_price": etf_current_price, "prev_close": prev_close}, "ts": now}
 
+    total_equity: float = bot_instance._calc_total_equity()
+    effective_buy_cap_ratio, cash_ratio, cap_reason = bot_instance._resolve_daily_buy_cap_ratio(total_equity)
+    target_weights: Dict[str, float] = bot_instance._resolve_symbol_target_weights(bot_instance.symbols)
+
     return {
         "symbols": bot_instance.symbols,
         "base_assets": bot_instance.base_assets,
         "base_buy_ratio": bot_instance.base_buy_ratio,
+        "daily_fixed_buy_qty": int(getattr(bot_instance, "daily_fixed_buy_qty", 1) or 1),
         "w2_ratio": bot_instance.w2_ratio,
         "w4_ratio": bot_instance.w4_ratio,
         "w8_ratio": bot_instance.w8_ratio,
+        "daily_buy_cap_ratio": effective_buy_cap_ratio,
+        "daily_buy_cap_ratio_effective": effective_buy_cap_ratio,
+        "daily_buy_cap_ratio_legacy": bot_instance.daily_buy_cap_ratio,
+        "daily_buy_used_usd": float(bot_instance.daily_state.get("daily_buy_used_usd", 0.0) or 0.0),
+        "daily_buy_cap_reason": str(bot_instance.daily_state.get("daily_buy_cap_reason", cap_reason) or cap_reason),
+        "cash_ratio": float(bot_instance.daily_state.get("cash_ratio", cash_ratio) or cash_ratio),
+        "cash_floor_hard_ratio": bot_instance.cash_floor_hard_ratio,
+        "cash_floor_soft_ratio": bot_instance.cash_floor_soft_ratio,
+        "buy_cap_high_cash_trigger": bot_instance.buy_cap_high_cash_trigger,
+        "buy_cap_ratio_high_cash": bot_instance.buy_cap_ratio_high_cash,
+        "buy_cap_ratio_mid_cash": bot_instance.buy_cap_ratio_mid_cash,
+        "buy_cap_ratio_low_cash": bot_instance.buy_cap_ratio_low_cash,
+        "target_weights": target_weights,
         "dca_2_threshold": bot_instance.dca_2_threshold,
         "dca_4_threshold": bot_instance.dca_4_threshold,
         "dca_8_threshold": bot_instance.dca_8_threshold,
         "trailing_stop_threshold": bot_instance.trailing_stop_threshold,
         "trailing_sell_pct": bot_instance.trailing_sell_pct,
+        "auto_take_profit_enabled": bot_instance.auto_take_profit_enabled,
+        "take_profit_rules": [{"level": lv, "sell_pct": pct} for lv, pct in bot_instance._take_profit_rules],
         "is_uptrend": bot_instance.is_uptrend,
         "is_rsi_oversold": bot_instance.is_rsi_oversold,
         "prev_close": prev_close,
         "hwm": bot_instance.hwm,
         "strategy_mode": bot_instance.strategy_mode,
+        "auto_active_mode": bot_instance.auto_active_mode,
+        "auto_defensive_cash_ratio": bot_instance.auto_defensive_cash_ratio,
+        "auto_defensive_sma_count": bot_instance.auto_defensive_sma_count,
+        "strategy_modes": bot_instance.strategy_modes,
         "base_price": base_price,
         "base_sma200": base_sma200,
         "etf_current_price": etf_current_price,
@@ -380,7 +457,8 @@ def _generate_ai_report() -> Dict[str, Any]:
             if target not in analyze_symbols:
                 analyze_symbols.append(target)
     if not analyze_symbols:
-        analyze_symbols = ["NVDA", "TSLA", "QQQ"]
+        # 슬롯이 비어있을 때는 특정 종목이 아닌 대표 시장 지수 ETF로 중립 분석
+        analyze_symbols = ["SPY", "QQQ", "IWM"]
     symbols: Dict[str, str] = {}
     for sym in analyze_symbols:
         try:
@@ -539,7 +617,6 @@ def _generate_ai_report() -> Dict[str, Any]:
 - 본 분석은 기술적 지표 기반 참고자료임을 마지막에 한 줄로 명시"""
 
     try:
-        url: str = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
         headers: Dict[str, str] = {
             "x-goog-api-key": gemini_key,
             "Content-Type": "application/json",
@@ -548,18 +625,92 @@ def _generate_ai_report() -> Dict[str, Any]:
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.5, "maxOutputTokens": 8192}
         }
-        resp = req.post(url, headers=headers, json=payload, timeout=120)
-        resp.raise_for_status()
-        result = resp.json()
-        candidates = result.get("candidates", [])
-        if not candidates:
-            return {"error": "Gemini API 응답에 candidates가 없습니다."}
-        candidate = candidates[0]
-        finish_reason: str = candidate.get("finishReason", "")
-        parts = candidate.get("content", {}).get("parts", [])
-        if not parts or "text" not in parts[0]:
-            return {"error": "Gemini API 응답에서 텍스트를 추출할 수 없습니다."}
-        text: str = parts[0]["text"]
+        preferred_model: str = str(os.getenv("GEMINI_MODEL", "") or "").strip()
+        fallback_models_raw: str = str(
+            os.getenv(
+                "GEMINI_MODEL_FALLBACKS",
+                "gemini-2.5-pro,gemini-2.5-flash,gemini-1.5-pro",
+            ) or ""
+        ).strip()
+        model_candidates: List[str] = []
+        if preferred_model:
+            model_candidates.append(preferred_model)
+        for model_name in fallback_models_raw.split(","):
+            m: str = str(model_name or "").strip()
+            if m and m not in model_candidates:
+                model_candidates.append(m)
+        if not model_candidates:
+            model_candidates = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro"]
+
+        api_versions: List[str] = ["v1beta", "v1"]
+        chosen_model: str = ""
+        chosen_api_ver: str = ""
+        finish_reason: str = ""
+        text: str = ""
+        last_http_status: int = 0
+        last_http_error: str = ""
+
+        for api_ver in api_versions:
+            if text:
+                break
+            for model in model_candidates:
+                url: str = f"https://generativelanguage.googleapis.com/{api_ver}/models/{model}:generateContent"
+                try:
+                    resp = req.post(url, headers=headers, json=payload, timeout=120)
+                    if resp.status_code >= 400:
+                        last_http_status = int(resp.status_code)
+                        try:
+                            err_payload: Dict[str, Any] = resp.json()
+                            err_msg: str = str(err_payload.get("error", {}).get("message", "") or "")
+                        except Exception:
+                            err_msg = str(resp.text[:220] or "")
+                        last_http_error = err_msg
+                        # 모델/버전 불일치 시 다음 후보로 자동 재시도
+                        if last_http_status in (400, 404):
+                            if bot_instance:
+                                bot_instance.log(
+                                    f"[Gemini API 재시도] status={last_http_status} model={model} api={api_ver}",
+                                    send_tg=False,
+                                )
+                            continue
+                        resp.raise_for_status()
+
+                    result = resp.json()
+                    candidates = result.get("candidates", [])
+                    if not candidates:
+                        continue
+                    candidate = candidates[0]
+                    finish_reason = str(candidate.get("finishReason", "") or "")
+                    parts = candidate.get("content", {}).get("parts", [])
+                    texts: List[str] = [
+                        str(part.get("text", "") or "")
+                        for part in parts
+                        if isinstance(part, dict) and str(part.get("text", "") or "").strip()
+                    ]
+                    if not texts:
+                        continue
+                    text = "\n".join(texts).strip()
+                    chosen_model = model
+                    chosen_api_ver = api_ver
+                    break
+                except req.HTTPError as http_err:
+                    res = getattr(http_err, "response", None)
+                    if res is not None:
+                        last_http_status = int(getattr(res, "status_code", 0) or 0)
+                    last_http_error = str(http_err)
+                    continue
+
+        if not text:
+            if bot_instance:
+                bot_instance.log(
+                    f"[Gemini API 실패 상세] status={last_http_status} err={last_http_error[:160]}",
+                    send_tg=False,
+                )
+            err_lower: str = str(last_http_error or "").lower()
+            if ("api key not valid" in err_lower) or ("api_key_invalid" in err_lower):
+                return {"error": "GEMINI_API_KEY가 유효하지 않습니다. 서버 env의 키를 새로 교체해주세요."}
+            return {"error": "Gemini API 호출 실패 (모델/버전 또는 API 키 확인 필요)"}
+
         if finish_reason == "MAX_TOKENS":
             text += "\n\n(분석이 길어 일부 생략되었습니다)"
         import re
@@ -571,7 +722,8 @@ def _generate_ai_report() -> Dict[str, Any]:
         report: Dict[str, Any] = {
             "report": text,
             "generated_at": now_kst.strftime("%Y-%m-%d %H:%M KST"),
-            "model": "gemini-3.1-pro-preview"
+            "model": chosen_model or preferred_model or "gemini",
+            "api_version": chosen_api_ver or "unknown",
         }
         with _ai_report_lock:
             report_dir: str = os.path.dirname(AI_REPORT_FILE)

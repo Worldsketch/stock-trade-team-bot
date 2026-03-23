@@ -44,6 +44,22 @@ def create_status_router(
     quote_refresh_min_interval_sec: float = 1.5
     quote_refresh_lock = threading.Lock()
 
+    def _resolve_krw_balance_display(
+        usd_balance: float,
+        krw_balance_raw: float,
+        krw_cash: float,
+        display_exchange_rate: float,
+    ) -> float:
+        rate: float = float(display_exchange_rate or 0.0)
+        if rate <= 0:
+            rate = 1400.0
+        usd_krw: float = max(0.0, float(usd_balance or 0.0)) * rate
+        native_krw: float = max(0.0, float(krw_balance_raw or 0.0))
+        native_cash: float = max(0.0, float(krw_cash or 0.0))
+        # 해외 운용 계좌에서는 원화 주문가능금액(raw)이 잔돈처럼 작게 내려올 수 있어
+        # USD 환산 예수금을 포함한 표시값을 우선 사용합니다.
+        return max(native_krw, usd_krw + native_cash)
+
     def _get_cached_slot_price(symbol: str, now_ts: float) -> float:
         cached = slot_price_cache.get(symbol)
         if not cached:
@@ -154,6 +170,34 @@ def create_status_router(
                     for slot in active_slots
                     if slot.get("symbol") and (not bool(slot.get("watch_only", False)))
                 ]
+                # 스냅샷은 슬롯 기반이라, 슬롯이 비어있으면 실보유가 positions에서 누락될 수 있음.
+                # 이 경우 계좌 전체 보유(__ALL__)를 1회 조회해 상태 화면에 그대로 반영한다.
+                if (not positions_list) and float(bot_snapshot.get("tot_stck_evlu", 0.0) or 0.0) > 0.0:
+                    try:
+                        fallback_symbols: list = holding_slot_symbols if holding_slot_symbols else ["__ALL__"]
+                        fallback_item_cd: str = (
+                            fallback_symbols[0]
+                            if fallback_symbols and fallback_symbols[0] != "__ALL__"
+                            else "AAPL"
+                        )
+                        fallback_data: Dict[str, Any] = bot.api.get_balance_and_positions(
+                            item_cd=fallback_item_cd,
+                            symbols=fallback_symbols,
+                        )
+                        fallback_positions: list = list(fallback_data.get("positions", []))
+                        if fallback_positions:
+                            positions_list = fallback_positions
+                            bot_snapshot["tot_evlu_pfls"] = float(
+                                fallback_data.get("tot_evlu_pfls", bot_snapshot.get("tot_evlu_pfls", 0.0)) or 0.0
+                            )
+                            bot_snapshot["tot_pchs_amt"] = float(
+                                fallback_data.get("tot_pchs_amt", bot_snapshot.get("tot_pchs_amt", 0.0)) or 0.0
+                            )
+                            bot_snapshot["tot_stck_evlu"] = float(
+                                fallback_data.get("tot_stck_evlu", bot_snapshot.get("tot_stck_evlu", 0.0)) or 0.0
+                            )
+                    except Exception:
+                        pass
                 # 스냅샷이 비정상(평가액 존재 + 보유 수량 전부 0)일 때는 즉시 재동기화 1회 시도
                 if holding_slot_symbols and float(bot_snapshot.get("tot_stck_evlu", 0.0) or 0.0) > 100:
                     qty_by_symbol: Dict[str, float] = {
@@ -305,13 +349,22 @@ def create_status_router(
 
                 usd_balance = float(bot_snapshot.get("usd_balance", 0.0) or 0.0)
                 tot_stck_evlu = float(bot_snapshot.get("tot_stck_evlu", 0.0) or 0.0)
+                exchange_rate = float(bot_snapshot.get("exchange_rate", bot.exchange_rate) or bot.exchange_rate)
+                display_exchange_rate = float(bot.get_display_exchange_rate() or exchange_rate)
+                krw_balance_raw = float(bot_snapshot.get("krw_balance", 0.0) or 0.0)
+                krw_cash = float(bot_snapshot.get("krw_cash", 0.0) or 0.0)
                 result = {
                     "is_running": bot.is_running,
                     "usd_balance": usd_balance,
-                    "krw_balance": float(bot_snapshot.get("krw_balance", 0.0) or 0.0),
-                    "krw_cash": float(bot_snapshot.get("krw_cash", 0.0) or 0.0),
-                    "exchange_rate": float(bot_snapshot.get("exchange_rate", bot.exchange_rate) or bot.exchange_rate),
-                    "display_exchange_rate": float(bot.get_display_exchange_rate() or bot.exchange_rate),
+                    "krw_balance": _resolve_krw_balance_display(
+                        usd_balance=usd_balance,
+                        krw_balance_raw=krw_balance_raw,
+                        krw_cash=krw_cash,
+                        display_exchange_rate=display_exchange_rate,
+                    ),
+                    "krw_cash": krw_cash,
+                    "exchange_rate": exchange_rate,
+                    "display_exchange_rate": display_exchange_rate,
                     "positions": positions_list,
                     "logs": bot.logs,
                     "tot_evlu_pfls": float(bot_snapshot.get("tot_evlu_pfls", 0.0) or 0.0),
@@ -341,7 +394,9 @@ def create_status_router(
             all_slot_symbols: list = [str(slot.get("symbol", "")).upper() for slot in active_slots if slot.get("symbol")]
             trading_symbols: list = list(bot.symbols)
             seed_symbols: list = trading_symbols if trading_symbols else all_slot_symbols
-            item_code: str = seed_symbols[0] if seed_symbols else "AAPL"
+            if not seed_symbols:
+                seed_symbols = ["__ALL__"]
+            item_code: str = seed_symbols[0] if seed_symbols and seed_symbols[0] != "__ALL__" else "AAPL"
             data: Optional[Dict[str, Any]] = None
             if live_data_cache:
                 data = live_data_cache.get_portfolio(ttl_sec=2.0)
@@ -371,8 +426,6 @@ def create_status_router(
             )
             for pos in sorted_positions:
                 symbol: str = pos["symbol"]
-                if symbol not in current_symbols:
-                    continue
                 if symbol in held_symbols:
                     continue
                 held_symbols.add(symbol)
@@ -483,19 +536,28 @@ def create_status_router(
                 if quantity > 0 and previous_close > 0 and current_price > 0:
                     daily_pnl_usd += (current_price - previous_close) * quantity
 
+            usd_balance_live: float = float(data.get("usd_balance", 0.0) or 0.0)
+            krw_balance_live: float = float(data.get("krw_balance", 0.0) or 0.0)
+            krw_cash_live: float = float(data.get("krw_cash", 0.0) or 0.0)
+            display_exchange_rate_live: float = float(bot.get_display_exchange_rate() or bot.exchange_rate)
             result: Dict[str, Any] = {
                 "is_running": bot.is_running,
-                "usd_balance": data["usd_balance"],
-                "krw_balance": data.get("krw_balance", 0.0),
-                "krw_cash": data.get("krw_cash", 0.0),
+                "usd_balance": usd_balance_live,
+                "krw_balance": _resolve_krw_balance_display(
+                    usd_balance=usd_balance_live,
+                    krw_balance_raw=krw_balance_live,
+                    krw_cash=krw_cash_live,
+                    display_exchange_rate=display_exchange_rate_live,
+                ),
+                "krw_cash": krw_cash_live,
                 "exchange_rate": bot.exchange_rate,
-                "display_exchange_rate": float(bot.get_display_exchange_rate() or bot.exchange_rate),
+                "display_exchange_rate": display_exchange_rate_live,
                 "positions": positions_list,
                 "logs": bot.logs,
                 "tot_evlu_pfls": data.get("tot_evlu_pfls", 0.0),
                 "tot_pchs_amt": data.get("tot_pchs_amt", 0.0),
                 "tot_stck_evlu": data.get("tot_stck_evlu", 0.0),
-                "total_eval": data["usd_balance"] + data.get("tot_stck_evlu", 0.0),
+                "total_eval": usd_balance_live + data.get("tot_stck_evlu", 0.0),
                 "daily_pnl_usd": round(daily_pnl_usd, 2),
                 "strategy_mode": bot.strategy_mode,
                 "auto_active": bot.auto_active_mode,

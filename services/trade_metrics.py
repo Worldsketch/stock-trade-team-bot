@@ -1,7 +1,7 @@
 import json
 import os
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def _parse_env_rate(name: str, default: float = 0.0) -> float:
@@ -50,8 +50,14 @@ def migrate_trade_pnl(trade_file: str = "trade_log.json") -> None:
             status: str = str(trade.get("status", "filled")).lower()
             if status in ("pending", "cancelled", "unfilled"):
                 continue
-            if holding["qty"] > 0 and holding["avg_cost"] > 0:
-                avg_cost: float = holding["avg_cost"]
+            avg_price_from_trade: float = float(trade.get("avg_price", 0.0) or 0.0)
+            avg_cost: float = 0.0
+            if avg_price_from_trade > 0:
+                avg_cost = avg_price_from_trade
+            elif holding["qty"] > 0 and holding["avg_cost"] > 0:
+                avg_cost = holding["avg_cost"]
+
+            if avg_cost > 0:
                 sell_cost_rate: float = float(trade.get("sell_cost_rate", _parse_env_rate("SELL_FEE_RATE", 0.0025) + _parse_env_rate("SELL_TAX_RATE", 0.0)) or 0.0)
                 sell_cost: float = float(trade.get("sell_cost", quantity * price * sell_cost_rate) or 0.0)
                 pnl: float = quantity * (price - avg_cost) - sell_cost
@@ -60,6 +66,8 @@ def migrate_trade_pnl(trade_file: str = "trade_log.json") -> None:
                 trade["sell_cost"] = round(sell_cost, 2)
                 trade["pnl"] = round(pnl, 2)
                 trade["pnl_pct"] = round(pnl_pct, 2)
+
+            if holding["qty"] > 0:
                 holding["qty"] = max(0.0, holding["qty"] - quantity)
 
     try:
@@ -74,21 +82,39 @@ class RealizedPnlCalculator:
     def __init__(self, cache_ttl_seconds: float = 60.0, trade_file: str = "trade_log.json") -> None:
         self.cache_ttl_seconds: float = cache_ttl_seconds
         self.trade_file: str = trade_file
-        self._cache: Dict[str, Any] = {"data": None, "ts": 0.0}
+        self._cache: Dict[str, Any] = {"data": None, "ts": 0.0, "file_token": None}
+
+    def _get_file_token(self) -> Optional[Tuple[int, int]]:
+        if not os.path.exists(self.trade_file):
+            return None
+        try:
+            stat = os.stat(self.trade_file)
+            return (int(stat.st_mtime_ns), int(stat.st_size))
+        except Exception:
+            return None
 
     def calculate(self) -> Dict[str, Any]:
         now: float = time.time()
-        if self._cache["data"] and (now - self._cache["ts"]) < self.cache_ttl_seconds:
+        file_token: Optional[Tuple[int, int]] = self._get_file_token()
+        if (
+            self._cache["data"]
+            and (now - self._cache["ts"]) < self.cache_ttl_seconds
+            and self._cache.get("file_token") == file_token
+        ):
             return self._cache["data"]
 
-        if not os.path.exists(self.trade_file):
-            return {"total": 0.0, "count": 0, "wins": 0, "losses": 0}
+        if file_token is None:
+            result = {"total": 0.0, "count": 0, "wins": 0, "losses": 0}
+            self._cache = {"data": result, "ts": now, "file_token": file_token}
+            return result
 
         try:
             with open(self.trade_file, "r", encoding="utf-8") as file:
                 trades: List[Dict[str, Any]] = json.load(file)
         except Exception:
-            return {"total": 0.0, "count": 0, "wins": 0, "losses": 0}
+            result = {"total": 0.0, "count": 0, "wins": 0, "losses": 0}
+            self._cache = {"data": result, "ts": now, "file_token": file_token}
+            return result
 
         holdings: Dict[str, Dict[str, float]] = {}
         total_pnl: float = 0.0
@@ -119,16 +145,37 @@ class RealizedPnlCalculator:
             elif side == "매도":
                 if status in ("pending", "cancelled", "unfilled"):
                     continue
-                if holding["qty"] > 0 and holding["avg_cost"] > 0:
-                    sell_cost_rate: float = float(trade.get("sell_cost_rate", default_sell_cost_rate) or default_sell_cost_rate)
-                    sell_cost: float = float(trade.get("sell_cost", quantity * price * sell_cost_rate) or 0.0)
-                    pnl: float = quantity * (price - holding["avg_cost"]) - sell_cost
-                    total_pnl += pnl
-                    sell_count += 1
-                    if pnl >= 0:
-                        win_count += 1
-                    else:
-                        loss_count += 1
+                sell_cost_rate: float = float(trade.get("sell_cost_rate", default_sell_cost_rate) or default_sell_cost_rate)
+                sell_cost: float = float(trade.get("sell_cost", quantity * price * sell_cost_rate) or 0.0)
+
+                pnl: Optional[float] = None
+                raw_pnl = trade.get("pnl", None)
+                if raw_pnl not in (None, ""):
+                    try:
+                        pnl = float(raw_pnl)
+                    except Exception:
+                        pnl = None
+
+                avg_price_from_trade: float = float(trade.get("avg_price", 0.0) or 0.0)
+                avg_cost: float = 0.0
+                if avg_price_from_trade > 0:
+                    avg_cost = avg_price_from_trade
+                elif holding["qty"] > 0 and holding["avg_cost"] > 0:
+                    avg_cost = holding["avg_cost"]
+
+                if pnl is None and avg_cost > 0:
+                    pnl = quantity * (price - avg_cost) - sell_cost
+                if pnl is None:
+                    continue
+
+                total_pnl += pnl
+                sell_count += 1
+                if pnl >= 0:
+                    win_count += 1
+                else:
+                    loss_count += 1
+
+                if holding["qty"] > 0:
                     holding["qty"] = max(0.0, holding["qty"] - quantity)
 
         result: Dict[str, Any] = {
@@ -137,5 +184,5 @@ class RealizedPnlCalculator:
             "wins": win_count,
             "losses": loss_count,
         }
-        self._cache = {"data": result, "ts": now}
+        self._cache = {"data": result, "ts": now, "file_token": file_token}
         return result

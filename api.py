@@ -719,7 +719,15 @@ class KoreaInvestmentAPI:
             except Exception as e:
                 print(f"[실전 원화 예수금 조회 에러] {_format_safe_error(e)}")
 
-            required_excgs: List[str] = self._normalize_us_exchanges_for_inquiry(self._get_required_exchanges(symbols))
+            symbols_upper: List[str] = [str(sym or "").strip().upper() for sym in (symbols or [])]
+            force_all_exchanges: bool = "__ALL__" in symbols_upper
+            base_required_excgs: List[str] = self._get_required_exchanges(symbols)
+            required_excgs: List[str]
+            if force_all_exchanges:
+                # 명시적 전체조회 요청 시 미국 3거래소를 모두 순회 조회
+                required_excgs = list(dict.fromkeys(base_required_excgs))
+            else:
+                required_excgs = self._normalize_us_exchanges_for_inquiry(base_required_excgs)
             for excg in required_excgs:
                 try:
                     pos_items, _pos_summaries = self._fetch_overseas_balance_pages(excg=excg, tr_crcy_cd="USD")
