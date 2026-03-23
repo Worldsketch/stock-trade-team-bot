@@ -2830,8 +2830,15 @@ class TradingBot:
                     sync_interval_sec: float = self._portfolio_sync_interval_sec
                     now_loop_et: datetime = self.get_eastern_time()
                     now_loop_kst: datetime = now_loop_et.astimezone(ZoneInfo("Asia/Seoul"))
+                    is_us_session: bool = self.is_active_trading_time(now_loop_et)
                     is_daytime_session: bool = self.is_daytime_market_open(now_loop_kst)
-                    is_trade_session: bool = self.is_active_trading_time(now_loop_et) or is_daytime_session
+                    is_trade_session: bool = is_us_session or is_daytime_session
+                    is_weekend_or_holiday: bool = (now_loop_et.weekday() >= 5) or self.is_us_market_holiday(now_loop_et)
+                    if is_weekend_or_holiday and (not is_trade_session):
+                        # 주말/휴장일에는 불필요한 잔고/현재가 API 호출을 생략하고 스냅샷만 유지
+                        if (now_ts - self._last_live_snapshot_ts) >= self._snapshot_publish_interval_sec:
+                            self._publish_live_snapshot()
+                        continue
                     if not is_trade_session:
                         sync_interval_sec = self._portfolio_sync_interval_idle_sec
                     if (now_ts - self._last_portfolio_sync_ts) >= sync_interval_sec:
@@ -2843,7 +2850,7 @@ class TradingBot:
                     quote_interval_sec: float = self._quote_refresh_interval_active_sec if is_trade_session else self._quote_refresh_interval_idle_sec
                     if (now_ts - self._last_quote_refresh_ts) >= quote_interval_sec:
                         try:
-                            self._refresh_slot_quotes(prefer_daytime=is_daytime_session and (not self.is_active_trading_time(now_loop_et)))
+                            self._refresh_slot_quotes(prefer_daytime=is_daytime_session and (not is_us_session))
                             self._last_quote_refresh_ts = now_ts
                         except Exception as quote_error:
                             self.log(f"[시세 갱신 오류] {quote_error}", send_tg=False)

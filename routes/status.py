@@ -126,6 +126,8 @@ def create_status_router(
                 now_kst = bot.get_korean_time()
                 now_et = bot.get_eastern_time()
                 is_daytime_session: bool = bot.is_daytime_market_open(now_kst)
+                is_us_session: bool = bot.is_active_trading_time(now_et)
+                allow_quote_refresh: bool = is_us_session or is_daytime_session
                 snapshot_quote_ts: float = float(bot_snapshot.get("ts", 0.0) or 0.0)
                 snapshot_age_sec: float = (now - snapshot_quote_ts) if snapshot_quote_ts > 0 else 999.0
                 snapshot_stale_sec: float = snapshot_stale_sec_active if is_daytime_session else snapshot_stale_sec_idle
@@ -167,19 +169,20 @@ def create_status_router(
                         # 오래된 스냅샷이 최신 캐시 가격을 덮어쓰지 않도록 보호
                         if cached_price > 0 and (snapshot_is_stale or (cached_ts > snapshot_quote_ts > 0)):
                             position["current_price"] = cached_price
-                            if snapshot_is_stale:
+                            if snapshot_is_stale and allow_quote_refresh:
                                 stale_price_candidates.add(symbol)
                         else:
                             _set_cached_slot_price(symbol, current_price, now)
-                            if snapshot_is_stale:
+                            if snapshot_is_stale and allow_quote_refresh:
                                 stale_price_candidates.add(symbol)
                         continue
                     if cached_price > 0:
                         position["current_price"] = cached_price
-                        if snapshot_is_stale:
+                        if snapshot_is_stale and allow_quote_refresh:
                             stale_price_candidates.add(symbol)
                         continue
-                    stale_price_candidates.add(symbol)
+                    if allow_quote_refresh:
+                        stale_price_candidates.add(symbol)
 
                 for slot in active_slots:
                     symbol = str(slot.get("symbol", "")).upper()
@@ -189,7 +192,7 @@ def create_status_router(
                     watch_only = bool(slot.get("watch_only", False))
                     peak_price = float(slot.get("peak_price", slot.get("anchor_price", 0.0)) or 0.0)
                     all_time_high = float(slot.get("all_time_high", peak_price) or peak_price)
-                    if fallback_price <= 0 and quote_refresh_budget > 0:
+                    if allow_quote_refresh and fallback_price <= 0 and quote_refresh_budget > 0:
                         if _schedule_slot_price_refresh(bot, symbol, is_daytime_session):
                             quote_refresh_budget -= 1
                     positions_list.append(
@@ -210,7 +213,7 @@ def create_status_router(
                         }
                     )
 
-                if quote_refresh_budget > 0:
+                if allow_quote_refresh and quote_refresh_budget > 0:
                     refresh_candidates = [
                         str(p.get("symbol", "")).upper()
                         for p in positions_list
@@ -288,6 +291,8 @@ def create_status_router(
             now_kst = bot.get_korean_time()
             now_et = bot.get_eastern_time()
             is_daytime_session: bool = bot.is_daytime_market_open(now_kst)
+            is_us_session: bool = bot.is_active_trading_time(now_et)
+            allow_quote_refresh: bool = is_us_session or is_daytime_session
             current_symbols: list = list(all_slot_symbols)
             positions_list: list = []
             held_symbols: set = set()
@@ -370,7 +375,7 @@ def create_status_router(
                     }
                 )
 
-            if quote_refresh_budget > 0:
+            if allow_quote_refresh and quote_refresh_budget > 0:
                 refresh_candidates = [
                     str(p.get("symbol", "")).upper()
                     for p in positions_list
