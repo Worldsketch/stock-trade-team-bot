@@ -63,6 +63,24 @@
 - stale/미수신 슬롯은 백그라운드 시세 갱신으로 복구하고, 요청 처리 스레드에서 동기 시세조회로 블로킹하지 않는다.
 - 종목별 중복 조회 방지를 위해 inflight/최소 간격(현재 1.5초) 제어를 유지한다.
 
+8. KIS 연속 실패 회로차단기(Circuit Breaker)
+- 동일 API 호출 키에서 연속 실패가 누적되면 짧은 cool-down 동안 해당 호출을 즉시 차단한다.
+- 기본값:
+  - `KIS_CIRCUIT_FAIL_THRESHOLD=4`
+  - `KIS_CIRCUIT_COOLDOWN_SEC=8`
+- 목적: KIS 일시 장애(500/네트워크 오류) 구간에서 재시도 폭주를 완화하고 전체 루프 안정성을 유지한다.
+
+9. 주문 시간 가드 서버 일원화
+- 수동 주문(`POST /api/sell`)과 슬롯 매수/제거(전량매도 포함)는 서버에서 동일 거래시간 가드를 강제한다.
+- 거래 가능 시간:
+  - 미국장 `ET 04:00~20:00`
+  - 데이장 `KST 09:00~16:00`
+- 자동 전략 주문은 정규장(`ET 09:30~16:00`)에서만 실행한다.
+
+10. 시작/중지 경쟁조건 방지
+- `/api/start`는 `_bot_control_lock` + `_bot_starting` 상태로 중복 기동을 차단한다.
+- `/api/stop`은 `is_running`/`_bot_starting` 모두 고려해 안전 정지한다.
+
 ## 운영 체크리스트
 - `api_fail_stats.json`가 생성/갱신되는지 확인
 - `USD 예수금 0` 발생 시 같은 시각의 `msg_cd` 패턴 확인
@@ -79,6 +97,13 @@
 - `USD 예수금 0`/빈 포지션 순간 이상치 방어 로직을 유지해 API 일시 이상 시 기존 안전값 유지
 - Watch 슬롯 `all_time_high` 백필/보정 로직으로 분할 왜곡 ATH를 정규화하고 카드 지표 정확도 개선
 
+## 최근 반영 메모 (2026-03-23)
+- `retry_api`에 endpoint 단위 circuit breaker 연동(연속 실패 임계/쿨다운)
+- `/api/start`/`/api/stop` 루프 기동 경쟁조건 방지 락 적용
+- 프록시 환경에서 클라이언트 IP 추출 시 `TRUST_PROXY_HEADERS`/`TRUSTED_PROXY_IPS` 정책 적용
+- `routes/trading.py`, `routes/slots_strategy.py` 요청 바디 파싱을 동기 경로로 정리(`Body`)해 event-loop 블로킹 리스크 축소
+- 수동 매도/슬롯 제거 전량매도 경로에 서버측 거래시간 가드 통일
+
 ## 현재 유량/부하 기준 (코드 설정)
 - 프론트 폴링
   - `status`: 2.5s (risk 6s / idle 15s)
@@ -92,6 +117,7 @@
   - `status_cache` 2초
   - `LiveDataCache` 포트폴리오 2~3초, 미체결 3초
   - slot quote refresh 최소 간격 1.5초 + inflight 제어
+  - circuit breaker 기본값: 4회 실패 시 8초 차단
 
 ## 확장 후보
 - 실패 코드별 재시도 정책 분기(즉시중단/재시도)

@@ -812,7 +812,8 @@ class TradingBot:
         now_et: datetime = datetime.now(ZoneInfo("America/New_York"))
         now_kst: datetime = now_et.astimezone(ZoneInfo("Asia/Seoul"))
         is_trade_session, prefer_daytime = self.get_order_window_flags(now_et=now_et, now_kst=now_kst)
-        if not is_trade_session:
+        # watch-only 슬롯은 실주문이 없으므로 시간 제한 없이 추가 허용
+        if (not watch_only) and (not is_trade_session):
             return {"success": False, "message": "거래 가능 시간에만 종목을 추가할 수 있습니다. (미국장 ET 04:00~20:00 / 데이장 KST 09:00~16:00)"}
         if self.slot_manager.is_full():
             return {"success": False, "message": f"슬롯이 가득 찼습니다. (최대 {self.slot_manager.max_slots}개)"}
