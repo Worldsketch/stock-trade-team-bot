@@ -69,6 +69,21 @@ def create_status_router(
             oldest_symbol = min(slot_price_cache.keys(), key=lambda s: slot_price_cache[s].get("ts", 0.0))
             slot_price_cache.pop(oldest_symbol, None)
 
+    def _get_prev_status_price(symbol: str) -> float:
+        try:
+            prev_data = status_cache.get("data") or {}
+            prev_positions = prev_data.get("positions", []) or []
+            sym = str(symbol or "").upper()
+            for row in prev_positions:
+                if str(row.get("symbol", "")).upper() != sym:
+                    continue
+                prev_price = float(row.get("current_price", 0.0) or 0.0)
+                if prev_price > 0:
+                    return prev_price
+        except Exception:
+            pass
+        return 0.0
+
     def _pick_round_robin_symbol(candidates: list) -> str:
         if not candidates:
             return ""
@@ -187,6 +202,7 @@ def create_status_router(
                     current_price = float(position.get("current_price", 0.0) or 0.0)
                     cached_price = _get_cached_slot_price(symbol, now)
                     cached_ts = _get_cached_slot_ts(symbol, now)
+                    prev_status_price = _get_prev_status_price(symbol)
                     if current_price > 0:
                         # 오래된 스냅샷이 최신 캐시 가격을 덮어쓰지 않도록 보호
                         if cached_price > 0 and (snapshot_is_stale or (cached_ts > snapshot_quote_ts > 0)):
@@ -203,8 +219,10 @@ def create_status_router(
                         if snapshot_is_stale and allow_quote_refresh:
                             stale_price_candidates.add(symbol)
                         continue
-                    if watch_only and anchor_price > 0:
-                        position["current_price"] = anchor_price
+                    if prev_status_price > 0:
+                        position["current_price"] = prev_status_price
+                        if snapshot_is_stale and allow_quote_refresh:
+                            stale_price_candidates.add(symbol)
                         continue
                     if allow_quote_refresh:
                         stale_price_candidates.add(symbol)
@@ -214,6 +232,9 @@ def create_status_router(
                     if not symbol or symbol in existing_symbols:
                         continue
                     fallback_price: float = _get_cached_slot_price(symbol, now)
+                    prev_status_price: float = _get_prev_status_price(symbol)
+                    if fallback_price <= 0 and prev_status_price > 0:
+                        fallback_price = prev_status_price
                     watch_only = bool(slot.get("watch_only", False))
                     anchor_price: float = float(slot.get("anchor_price", 0.0) or 0.0)
                     if watch_only and fallback_price <= 0 and anchor_price > 0:
@@ -349,6 +370,10 @@ def create_status_router(
                     cached_price = _get_cached_slot_price(symbol, now)
                     if cached_price > 0:
                         current_price = cached_price
+                    else:
+                        prev_status_price = _get_prev_status_price(symbol)
+                        if prev_status_price > 0:
+                            current_price = prev_status_price
                 slot_info = slot_map.get(symbol, {})
                 watch_only = bool(slot_info.get("watch_only", False))
                 if watch_only and current_price <= 0:
@@ -383,6 +408,9 @@ def create_status_router(
                     continue
                 slot_info = slot_map.get(symbol, {})
                 fallback_price: float = _get_cached_slot_price(symbol, now)
+                prev_status_price: float = _get_prev_status_price(symbol)
+                if fallback_price <= 0 and prev_status_price > 0:
+                    fallback_price = prev_status_price
                 watch_only = bool(slot_info.get("watch_only", False))
                 anchor_price: float = float(slot_info.get("anchor_price", 0.0) or 0.0)
                 if watch_only and fallback_price <= 0 and anchor_price > 0:
