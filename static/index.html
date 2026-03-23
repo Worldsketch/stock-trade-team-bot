@@ -591,6 +591,7 @@
         let _addSlotLockedSymbol = '';
         let _watchRemoveTarget = '';
         let _lastWatchPriceBySymbol = new Map();
+        let _slotRemoveTombstone = new Map();
         let _queuedStatusRefreshTimer = null;
         let _loginInFlight = false;
         let _autoLoginTimer = null;
@@ -616,6 +617,27 @@
         const INITIAL_CHART_DELAY_MS = 350;
         const INITIAL_QUOTE_DELAY_MS = 700;
         const SMART_SELL_INITIAL_DISCOUNT = 0.001; // -0.1%
+        const SLOT_REMOVE_TOMBSTONE_TTL_MS = 12000;
+
+        function _cleanupSlotRemoveTombstone(nowTs = Date.now()) {
+            for (const [sym, expireTs] of _slotRemoveTombstone.entries()) {
+                if (!sym || nowTs >= Number(expireTs || 0)) {
+                    _slotRemoveTombstone.delete(sym);
+                }
+            }
+        }
+
+        function _markSlotRemovedLocally(symbol) {
+            const sym = sanitizeSymbol(symbol || '');
+            if (!sym) return;
+            _slotRemoveTombstone.set(sym, Date.now() + SLOT_REMOVE_TOMBSTONE_TTL_MS);
+        }
+
+        function _clearSlotRemoveTombstone(symbol) {
+            const sym = sanitizeSymbol(symbol || '');
+            if (!sym) return;
+            _slotRemoveTombstone.delete(sym);
+        }
 
         function persistChartSymbol(symbol) {
             if (!symbol) return;
@@ -1340,6 +1362,7 @@
             const watchOnly = options.watchOnly === true;
             const safeSymbol = sanitizeSymbol(symbol || data.symbol || '');
             if (!safeSymbol) return false;
+            _clearSlotRemoveTombstone(safeSymbol);
             return applyOptimisticStatusPatch((nextData) => {
                 nextData.slots = Array.isArray(nextData.slots) ? nextData.slots : [];
                 nextData.positions = Array.isArray(nextData.positions) ? nextData.positions : [];
@@ -1385,6 +1408,7 @@
         function applyOptimisticSlotRemove(symbol) {
             const safeSymbol = sanitizeSymbol(symbol || '');
             if (!safeSymbol) return false;
+            _markSlotRemovedLocally(safeSymbol);
             return applyOptimisticStatusPatch((nextData) => {
                 nextData.slots = (Array.isArray(nextData.slots) ? nextData.slots : [])
                     .filter((slot) => sanitizeSymbol(slot?.symbol || '') !== safeSymbol);
@@ -1869,9 +1893,11 @@
         }
 
         function updateUI(data) {
+            _cleanupSlotRemoveTombstone();
+            const isRemovedLocally = (sym) => _slotRemoveTombstone.has(sanitizeSymbol(sym || ''));
             if (data.slots) {
                 const prevLen = currentSlots.length;
-                let nextSlots = data.slots;
+                let nextSlots = (Array.isArray(data.slots) ? data.slots : []).filter((s) => !isRemovedLocally(s?.symbol));
                 if (_preferredSlotOrderSymbols.length > 0) {
                     nextSlots = sortSlotsByOrder(nextSlots, _preferredSlotOrderSymbols);
                 }
@@ -1912,9 +1938,10 @@
             const usdBal = data.usd_balance || 0;
             const krwBal = data.krw_balance || 0;
             const krwCash = data.krw_cash || 0;
+            const filteredPositions = (Array.isArray(data.positions) ? data.positions : []).filter((p) => !isRemovedLocally(p?.symbol));
             let positionsValue = 0, totalInvested = 0, totalPl = 0;
-            if (data.positions) {
-                data.positions.forEach(p => {
+            if (filteredPositions.length > 0) {
+                filteredPositions.forEach(p => {
                     positionsValue += p.evlu_amt || (p.quantity * p.current_price);
                     totalInvested += p.pchs_amt || (p.quantity * p.avg_price);
                     totalPl += p.evlu_pfls || 0;
@@ -1993,15 +2020,15 @@
             }
 
             const container = document.getElementById('positionsContainer');
-            if (data.positions && data.positions.length > 0) {
+            if (filteredPositions.length > 0) {
                 let sumInvested = 0, sumCurrent = 0, sumPl = 0;
-                data.positions.forEach(pos => {
+                filteredPositions.forEach(pos => {
                     const evalUsd = pos.evlu_amt || (pos.quantity * pos.current_price);
                     const plUsd = pos.evlu_pfls || 0;
                     const pchsUsd = pos.pchs_amt || (pos.quantity * pos.avg_price);
                     sumInvested += pchsUsd; sumCurrent += evalUsd; sumPl += plUsd;
                 });
-                renderPositionCards(container, data.positions, rate);
+                renderPositionCards(container, filteredPositions, rate);
                 renderPendingInCards();
                 const sumRetRate = sumInvested > 0 ? (sumPl / sumInvested) * 100 : 0;
                 document.getElementById('sumEvalAmount').textContent = showKrw ? fmtKrw(sumCurrent * rate) : fmtUsd(sumCurrent);
