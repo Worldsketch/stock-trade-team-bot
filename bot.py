@@ -587,7 +587,7 @@ class TradingBot:
 
         now_ts: float = time.time()
         last_attempt: float = float(self._ath_backfill_last_attempt_ts.get(sym, 0.0) or 0.0)
-        if (now_ts - last_attempt) < self._ath_backfill_min_interval_sec and (not suspicious_ath):
+        if (now_ts - last_attempt) < self._ath_backfill_min_interval_sec and (not suspicious_ath) and (not seed_like_ath):
             fallback = max(cur_ath, peak_price, float(price_hint or 0.0), float(slot_info.get("anchor_price", 0.0) or 0.0))
             return fallback
         self._ath_backfill_last_attempt_ts[sym] = now_ts
