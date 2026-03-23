@@ -68,6 +68,13 @@ def _parse_env_rate(name: str, default: float = 0.0) -> float:
         return max(0.0, default)
 
 
+def _parse_env_float(name: str, default: float = 0.0) -> float:
+    try:
+        return float(str(os.getenv(name, default)).strip())
+    except Exception:
+        return float(default)
+
+
 def _parse_env_int(name: str, default: int = 0, min_value: int = 0) -> int:
     try:
         value = int(str(os.getenv(name, str(default))).strip())
@@ -136,6 +143,28 @@ def _parse_env_symbol_weights(name: str) -> Dict[str, float]:
             weight /= 100.0
         out[sym] = max(0.0, weight)
     return out
+
+
+def _parse_env_hhmm_minutes(name: str, default_hhmm: str) -> int:
+    def _parse(raw: str) -> Optional[int]:
+        text: str = str(raw or "").strip()
+        if not text or ":" not in text:
+            return None
+        try:
+            hh_raw, mm_raw = text.split(":", 1)
+            hh: int = int(hh_raw)
+            mm: int = int(mm_raw)
+            if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+                return None
+            return hh * 60 + mm
+        except Exception:
+            return None
+
+    parsed: Optional[int] = _parse(str(os.getenv(name, default_hhmm)))
+    if parsed is not None:
+        return parsed
+    fallback: Optional[int] = _parse(default_hhmm)
+    return fallback if fallback is not None else (10 * 60 + 30)
 
 
 class SlotManager:
@@ -378,6 +407,21 @@ class TradingBot:
         self.daily_buy_cap_ratio: float = min(1.0, _parse_env_rate("DAILY_BUY_CAP_RATIO", 0.12))
         # 적립식 기본매수: 하루 1회 고정 수량 매수 (기본 1주)
         self.daily_fixed_buy_qty: int = _parse_env_int("DAILY_FIXED_BUY_QTY", 1, min_value=1)
+        # 적립식 기본매수: 장중 동향 확인 후 진입 + 마감 전 미체결 시 보장 매수
+        self.daily_base_signal_start_minute: int = _parse_env_hhmm_minutes("DAILY_BASE_SIGNAL_START_ET", "10:30")
+        self.daily_base_signal_end_minute: int = _parse_env_hhmm_minutes("DAILY_BASE_SIGNAL_END_ET", "15:30")
+        if self.daily_base_signal_end_minute < self.daily_base_signal_start_minute:
+            self.daily_base_signal_end_minute = self.daily_base_signal_start_minute
+        self.daily_base_force_buy_minute: int = _parse_env_hhmm_minutes("DAILY_BASE_FORCE_BUY_ET", "15:40")
+        self.daily_base_force_buy_minute = max(self.daily_base_signal_end_minute, self.daily_base_force_buy_minute)
+        self.daily_base_drop_trigger: float = _parse_env_float("DAILY_BASE_DROP_TRIGGER", -0.003)
+        if self.daily_base_drop_trigger > 0:
+            self.daily_base_drop_trigger = -self.daily_base_drop_trigger
+        if self.daily_base_drop_trigger < -1.0:
+            self.daily_base_drop_trigger /= 100.0
+        self.daily_base_rsi_max: float = min(80.0, max(5.0, _parse_env_rate("DAILY_BASE_RSI_MAX", 45.0)))
+        self.daily_base_pump_block: float = min(0.30, _parse_env_rate("DAILY_BASE_PUMP_BLOCK", 0.015))
+        self.daily_base_min_signals: int = min(3, _parse_env_int("DAILY_BASE_MIN_SIGNALS", 2, min_value=1))
         self.cash_floor_hard_ratio: float = min(1.0, _parse_env_rate("CASH_FLOOR_HARD_RATIO", 0.30))
         self.cash_floor_soft_ratio: float = max(
             self.cash_floor_hard_ratio,
@@ -439,6 +483,8 @@ class TradingBot:
         self._quote_rr_index: int = 0
         self._slot_quote_cache: Dict[str, Dict[str, float]] = {}
         self._slot_quote_cache_ttl_sec: float = 12.0
+        self._intraday_entry_cache: Dict[str, Dict[str, Any]] = {}
+        self._intraday_entry_cache_ttl_sec: float = max(15.0, _parse_env_rate("DAILY_BASE_SIGNAL_CACHE_SEC", 75.0))
         self._ath_cache: Dict[str, Dict[str, float]] = {}
         self._ath_cache_ttl_sec: float = 21600.0
         self._ath_backfill_last_attempt_ts: Dict[str, float] = {}
@@ -896,6 +942,112 @@ class TradingBot:
             equal_weight = 1.0 / float(len(active))
             return {sym: equal_weight for sym in active}
         return {sym: float(w) / total for sym, w in weights.items()}
+
+    def _compute_rsi_from_closes(self, closes: List[float], period: int = 14) -> float:
+        if len(closes) < (period + 1):
+            return 50.0
+        series = pd.Series(closes, dtype=float)
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0.0).ewm(alpha=1 / period, adjust=False).mean()
+        loss_raw = (-delta.where(delta < 0, 0.0)).ewm(alpha=1 / period, adjust=False).mean()
+        loss_safe = loss_raw.replace(0.0, 1e-10)
+        rs = gain / loss_safe
+        rsi = float((100 - (100 / (1 + rs))).iloc[-1])
+        if pd.isna(rsi):
+            return 50.0
+        return max(0.0, min(100.0, rsi))
+
+    def _get_intraday_entry_snapshot(
+        self,
+        symbol: str,
+        now_et: datetime,
+        prefer_daytime: bool = False,
+    ) -> Dict[str, float]:
+        sym: str = str(symbol or "").upper().strip()
+        if not sym:
+            return {"bars": 0.0, "vwap": 0.0, "rsi_5m": 50.0, "last_close": 0.0}
+
+        now_ts: float = time.time()
+        day_key: str = now_et.strftime("%Y-%m-%d")
+        cached: Optional[Dict[str, Any]] = self._intraday_entry_cache.get(sym)
+        if (
+            cached
+            and str(cached.get("day", "")) == day_key
+            and (now_ts - float(cached.get("ts", 0.0))) < self._intraday_entry_cache_ttl_sec
+        ):
+            data = cached.get("data", {})
+            if isinstance(data, dict):
+                return dict(data)
+
+        closes: List[float] = []
+        vwap_notional: float = 0.0
+        vwap_volume: float = 0.0
+        try:
+            candles: List[Dict[str, Any]] = self.api.get_intraday_candles(
+                symbol=sym,
+                interval_min=5,
+                nrec=96,
+                prefer_daytime=prefer_daytime,
+            )
+            for candle in candles:
+                close: float = float(candle.get("close", 0.0) or 0.0)
+                if close <= 0:
+                    continue
+                ts_epoch: int = int(candle.get("time", 0) or 0)
+                if ts_epoch > 0:
+                    dt_et: datetime = datetime.fromtimestamp(ts_epoch, ZoneInfo("America/New_York"))
+                    if dt_et.date() != now_et.date():
+                        continue
+                closes.append(close)
+                volume: float = float(candle.get("volume", 0.0) or 0.0)
+                if volume > 0:
+                    vwap_notional += close * volume
+                    vwap_volume += volume
+        except Exception:
+            pass
+
+        vwap: float = (vwap_notional / vwap_volume) if vwap_volume > 0 else 0.0
+        rsi_5m: float = self._compute_rsi_from_closes(closes, period=14)
+        snapshot: Dict[str, float] = {
+            "bars": float(len(closes)),
+            "vwap": float(vwap),
+            "rsi_5m": float(rsi_5m),
+            "last_close": float(closes[-1]) if closes else 0.0,
+        }
+        self._intraday_entry_cache[sym] = {"day": day_key, "ts": now_ts, "data": snapshot}
+        return snapshot
+
+    def _evaluate_daily_base_signal(
+        self,
+        symbol: str,
+        current_price: float,
+        prev_close: float,
+        now_et: datetime,
+    ) -> Dict[str, Any]:
+        snapshot = self._get_intraday_entry_snapshot(symbol=symbol, now_et=now_et, prefer_daytime=False)
+        bars: int = int(float(snapshot.get("bars", 0.0) or 0.0))
+        vwap: float = float(snapshot.get("vwap", 0.0) or 0.0)
+        rsi_5m: float = float(snapshot.get("rsi_5m", 50.0) or 50.0)
+        intraday_ret: float = (current_price - prev_close) / prev_close if prev_close > 0 else 0.0
+
+        cond_drop: bool = prev_close > 0 and intraday_ret <= self.daily_base_drop_trigger
+        cond_vwap: bool = vwap > 0 and current_price <= vwap
+        cond_rsi: bool = bars >= 15 and rsi_5m <= self.daily_base_rsi_max
+        signal_count: int = int(cond_drop) + int(cond_vwap) + int(cond_rsi)
+        blocked_pump: bool = prev_close > 0 and intraday_ret >= self.daily_base_pump_block
+        allow: bool = (not blocked_pump) and (signal_count >= self.daily_base_min_signals)
+        return {
+            "allow": allow,
+            "blocked_pump": blocked_pump,
+            "signal_count": signal_count,
+            "cond_drop": cond_drop,
+            "cond_vwap": cond_vwap,
+            "cond_rsi": cond_rsi,
+            "bars": bars,
+            "vwap": vwap,
+            "rsi_5m": rsi_5m,
+            "intraday_ret": intraday_ret,
+        }
 
     def _get_underweight_priority_symbols(self, symbols: Optional[List[str]] = None) -> List[str]:
         active: List[str] = list(symbols or self.symbols)
@@ -3179,7 +3331,7 @@ class TradingBot:
                     self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
                 return spent_cash
 
-            def _try_place_fixed_daily_shares(fixed_qty: int) -> float:
+            def _try_place_fixed_daily_shares(fixed_qty: int, tier_name: str = "") -> float:
                 nonlocal daily_buy_used_usd
                 qty_fixed: int = int(max(1, fixed_qty))
                 buy_price: float = round(price * (1.0 + SMART_BUY_INITIAL_PREMIUM), 2)
@@ -3188,11 +3340,12 @@ class TradingBot:
                     return 0.0
                 if self.last_usd_balance < required_cash:
                     return 0.0
+                reason: str = tier_name.strip() or f"매일 {qty_fixed}주 적립"
                 spent_cash: float = self._place_calculated_order(
                     symbol,
                     price,
                     required_cash,
-                    f"매일 {qty_fixed}주 적립",
+                    reason,
                     buy_ratio=0.0,
                     allow_min_qty_override=False,
                 )
@@ -3201,9 +3354,36 @@ class TradingBot:
                     self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
                 return spent_cash
 
-            # 1. 매일 1회 적립식 고정 수량 매수 (조건 없이 1주, 예수금 부족 시만 스킵)
+            prev_close: float = self.prev_close.get(symbol, 0.0)
+            et_minute: int = now_et.hour * 60 + now_et.minute
+            in_signal_window: bool = self.daily_base_signal_start_minute <= et_minute <= self.daily_base_signal_end_minute
+            force_buy_due: bool = et_minute >= self.daily_base_force_buy_minute
+
+            # 1. 매일 1회 적립식 고정 수량 매수 (장중 동향 신호 우선, 마감 전 보장 매수)
             if not state['base']:
-                spent_cash: float = _try_place_fixed_daily_shares(self.daily_fixed_buy_qty)
+                spent_cash: float = 0.0
+                if in_signal_window:
+                    signal = self._evaluate_daily_base_signal(
+                        symbol=symbol,
+                        current_price=price,
+                        prev_close=prev_close,
+                        now_et=now_et,
+                    )
+                    if signal.get("allow", False):
+                        signal_tags: List[str] = []
+                        if signal.get("cond_drop", False):
+                            signal_tags.append("전일종가 하락")
+                        if signal.get("cond_vwap", False):
+                            signal_tags.append("VWAP 이하")
+                        if signal.get("cond_rsi", False):
+                            signal_tags.append("RSI 저점")
+                        reason = f"매일 {self.daily_fixed_buy_qty}주 적립(동향신호 {signal.get('signal_count', 0)}/{self.daily_base_min_signals}: {', '.join(signal_tags)})"
+                        spent_cash = _try_place_fixed_daily_shares(self.daily_fixed_buy_qty, tier_name=reason)
+                if (spent_cash <= 0) and force_buy_due:
+                    spent_cash = _try_place_fixed_daily_shares(
+                        self.daily_fixed_buy_qty,
+                        tier_name=f"매일 {self.daily_fixed_buy_qty}주 적립(마감 보장)",
+                    )
                 if spent_cash > 0:
                     state['base'] = True
                     self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
@@ -3213,9 +3393,8 @@ class TradingBot:
                     total_equity = self.last_usd_balance + (self.positions['quantity'] * self.positions['current_price']).sum()
                     effective_buy_cap_ratio, cash_ratio, cap_reason = self._resolve_daily_buy_cap_ratio(total_equity)
                     daily_buy_cap_usd = total_equity * effective_buy_cap_ratio if effective_buy_cap_ratio > 0 else 0.0
-            
+
             # 2. 전일종가 대비 당일 하락률 기준 DCA (SMA200 필터만 적용)
-            prev_close: float = self.prev_close.get(symbol, 0.0)
             intraday_drop: float = (price - prev_close) / prev_close if prev_close > 0 else 0.0
             
             if qty > 0 and is_buy_allowed:
