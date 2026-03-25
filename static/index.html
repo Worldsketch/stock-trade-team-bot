@@ -461,48 +461,6 @@
                         </div>
                         <div id="autocompleteSpinner" class="hidden absolute right-16 top-[42px] text-slate-500"><i class="fa-solid fa-spinner fa-spin text-xs"></i></div>
                     </div>
-                    <div id="popularTickersSection">
-                        <p class="text-xs font-semibold text-slate-500 mb-2">추천 종목</p>
-                        <div class="flex flex-wrap gap-2 mb-3">
-                            <button onclick="quickSearch('NVDL')" class="px-3 py-1.5 rounded-lg bg-emerald-600/15 text-emerald-400 text-xs font-semibold border border-emerald-500/20 hover:bg-emerald-600/30 transition-colors">NVDL <span class="text-slate-500">2x NVDA</span></button>
-                            <button onclick="quickSearch('TSLL')" class="px-3 py-1.5 rounded-lg bg-rose-600/15 text-rose-400 text-xs font-semibold border border-rose-500/20 hover:bg-rose-600/30 transition-colors">TSLL <span class="text-slate-500">2x TSLA</span></button>
-                            <button onclick="quickSearch('TQQQ')" class="px-3 py-1.5 rounded-lg bg-blue-600/15 text-blue-400 text-xs font-semibold border border-blue-500/20 hover:bg-blue-600/30 transition-colors">TQQQ <span class="text-slate-500">3x QQQ</span></button>
-                            <button onclick="quickSearch('SOXL')" class="px-3 py-1.5 rounded-lg bg-purple-600/15 text-purple-400 text-xs font-semibold border border-purple-500/20 hover:bg-purple-600/30 transition-colors">SOXL <span class="text-slate-500">3x 반도체</span></button>
-                            <button onclick="quickSearch('UPRO')" class="px-3 py-1.5 rounded-lg bg-amber-600/15 text-amber-400 text-xs font-semibold border border-amber-500/20 hover:bg-amber-600/30 transition-colors">UPRO <span class="text-slate-500">3x S&P500</span></button>
-                            <button onclick="quickSearch('SPY')" class="px-3 py-1.5 rounded-lg bg-slate-600/15 text-slate-300 text-xs font-semibold border border-slate-500/20 hover:bg-slate-600/30 transition-colors">SPY <span class="text-slate-500">S&P500</span></button>
-                        </div>
-                        <p class="text-xs font-semibold text-slate-500 mb-2">Magnificent 7</p>
-                        <div class="flex flex-wrap gap-2 mb-3">
-                            <button onclick="quickSearch('AAPL')" class="px-3 py-1.5 rounded-lg bg-slate-600/15 text-slate-300 text-xs font-semibold border border-slate-500/20 hover:bg-slate-600/30 transition-colors">AAPL <span class="text-slate-500">애플</span></button>
-                            <button onclick="quickSearch('MSFT')" class="px-3 py-1.5 rounded-lg bg-slate-600/15 text-slate-300 text-xs font-semibold border border-slate-500/20 hover:bg-slate-600/30 transition-colors">MSFT <span class="text-slate-500">MS</span></button>
-                            <button onclick="quickSearch('NVDA')" class="px-3 py-1.5 rounded-lg bg-slate-600/15 text-slate-300 text-xs font-semibold border border-slate-500/20 hover:bg-slate-600/30 transition-colors">NVDA <span class="text-slate-500">엔비디아</span></button>
-                            <button onclick="quickSearch('AMZN')" class="px-3 py-1.5 rounded-lg bg-slate-600/15 text-slate-300 text-xs font-semibold border border-slate-500/20 hover:bg-slate-600/30 transition-colors">AMZN <span class="text-slate-500">아마존</span></button>
-                            <button onclick="quickSearch('GOOG')" class="px-3 py-1.5 rounded-lg bg-slate-600/15 text-slate-300 text-xs font-semibold border border-slate-500/20 hover:bg-slate-600/30 transition-colors">GOOG <span class="text-slate-500">구글</span></button>
-                            <button onclick="quickSearch('META')" class="px-3 py-1.5 rounded-lg bg-slate-600/15 text-slate-300 text-xs font-semibold border border-slate-500/20 hover:bg-slate-600/30 transition-colors">META <span class="text-slate-500">메타</span></button>
-                            <button onclick="quickSearch('TSLA')" class="px-3 py-1.5 rounded-lg bg-slate-600/15 text-slate-300 text-xs font-semibold border border-slate-500/20 hover:bg-slate-600/30 transition-colors">TSLA <span class="text-slate-500">테슬라</span></button>
-                        </div>
-                        <p class="text-xs font-semibold text-slate-500 mb-2">레버리지 ETF</p>
-                        <div class="flex flex-wrap gap-2 mb-3">
-                            <button onclick="quickSearch('NVDL')" class="px-3 py-1.5 rounded-lg bg-emerald-600/15 text-emerald-400 text-xs font-semibold border border-emerald-500/20 hover:bg-emerald-600/30 transition-colors">NVDL <span class="text-slate-500">2x NVDA</span></button>
-                            <button onclick="quickSearch('TSLL')" class="px-3 py-1.5 rounded-lg bg-rose-600/15 text-rose-400 text-xs font-semibold border border-rose-500/20 hover:bg-rose-600/30 transition-colors">TSLL <span class="text-slate-500">2x TSLA</span></button>
-                            <button onclick="quickSearch('AAPU')" class="px-3 py-1.5 rounded-lg bg-emerald-600/15 text-emerald-400 text-xs font-semibold border border-emerald-500/20 hover:bg-emerald-600/30 transition-colors">AAPU <span class="text-slate-500">2x AAPL</span></button>
-                            <button onclick="quickSearch('MSFU')" class="px-3 py-1.5 rounded-lg bg-blue-600/15 text-blue-400 text-xs font-semibold border border-blue-500/20 hover:bg-blue-600/30 transition-colors">MSFU <span class="text-slate-500">2x MSFT</span></button>
-                            <button onclick="quickSearch('AMZU')" class="px-3 py-1.5 rounded-lg bg-amber-600/15 text-amber-400 text-xs font-semibold border border-amber-500/20 hover:bg-amber-600/30 transition-colors">AMZU <span class="text-slate-500">2x AMZN</span></button>
-                            <button onclick="quickSearch('GGLL')" class="px-3 py-1.5 rounded-lg bg-cyan-600/15 text-cyan-400 text-xs font-semibold border border-cyan-500/20 hover:bg-cyan-600/30 transition-colors">GGLL <span class="text-slate-500">2x GOOG</span></button>
-                            <button onclick="quickSearch('METU')" class="px-3 py-1.5 rounded-lg bg-purple-600/15 text-purple-400 text-xs font-semibold border border-purple-500/20 hover:bg-purple-600/30 transition-colors">METU <span class="text-slate-500">2x META</span></button>
-                        </div>
-                        <p class="text-xs font-semibold text-slate-500 mb-2">지수 레버리지</p>
-                        <div class="flex flex-wrap gap-2">
-                            <button onclick="quickSearch('TQQQ')" class="px-3 py-1.5 rounded-lg bg-blue-600/15 text-blue-400 text-xs font-semibold border border-blue-500/20 hover:bg-blue-600/30 transition-colors">TQQQ <span class="text-slate-500">3x QQQ</span></button>
-                            <button onclick="quickSearch('SOXL')" class="px-3 py-1.5 rounded-lg bg-purple-600/15 text-purple-400 text-xs font-semibold border border-purple-500/20 hover:bg-purple-600/30 transition-colors">SOXL <span class="text-slate-500">3x 반도체</span></button>
-                            <button onclick="quickSearch('UPRO')" class="px-3 py-1.5 rounded-lg bg-amber-600/15 text-amber-400 text-xs font-semibold border border-amber-500/20 hover:bg-amber-600/30 transition-colors">UPRO <span class="text-slate-500">3x S&P500</span></button>
-                            <button onclick="quickSearch('TECL')" class="px-3 py-1.5 rounded-lg bg-cyan-600/15 text-cyan-400 text-xs font-semibold border border-cyan-500/20 hover:bg-cyan-600/30 transition-colors">TECL <span class="text-slate-500">3x IT</span></button>
-                            <button onclick="quickSearch('FNGU')" class="px-3 py-1.5 rounded-lg bg-emerald-600/15 text-emerald-400 text-xs font-semibold border border-emerald-500/20 hover:bg-emerald-600/30 transition-colors">FNGU <span class="text-slate-500">3x FANG+</span></button>
-                            <button onclick="quickSearch('LABU')" class="px-3 py-1.5 rounded-lg bg-rose-600/15 text-rose-400 text-xs font-semibold border border-rose-500/20 hover:bg-rose-600/30 transition-colors">LABU <span class="text-slate-500">3x 바이오</span></button>
-                            <button onclick="quickSearch('FAS')" class="px-3 py-1.5 rounded-lg bg-amber-600/15 text-amber-400 text-xs font-semibold border border-amber-500/20 hover:bg-amber-600/30 transition-colors">FAS <span class="text-slate-500">3x 금융</span></button>
-                            <button onclick="quickSearch('DFEN')" class="px-3 py-1.5 rounded-lg bg-blue-600/15 text-blue-400 text-xs font-semibold border border-blue-500/20 hover:bg-blue-600/30 transition-colors">DFEN <span class="text-slate-500">3x 방산</span></button>
-                        </div>
-                    </div>
                     <div id="tickerSearchResult" class="hidden">
                     </div>
                 </div>
@@ -2881,7 +2839,6 @@
             document.getElementById('tickerSearchInput').value = '';
             document.getElementById('tickerSearchResult').classList.add('hidden');
             document.getElementById('autocompleteDropdown').classList.add('hidden');
-            document.getElementById('popularTickersSection').style.display = '';
             updateTickerClearButton();
             document.getElementById('tickerSearchInput').focus();
         }
@@ -2971,7 +2928,7 @@
                 dropdown.innerHTML = '';
                 spinner.classList.add('hidden');
                 document.getElementById('tickerSearchResult').classList.add('hidden');
-                document.getElementById('popularTickersSection').style.display = '';
+                if (popular) popular.style.display = '';
                 _acHighlight = -1;
                 if (_acTimer) clearTimeout(_acTimer);
                 if (_acAbort) _acAbort.abort();
@@ -3082,12 +3039,6 @@
             }
         });
 
-        function quickSearch(sym) {
-            document.getElementById('tickerSearchInput').value = sym;
-            document.getElementById('autocompleteDropdown').classList.add('hidden');
-            updateTickerClearButton();
-            searchTicker();
-        }
         async function searchTicker() {
             const inputSymbol = sanitizeSymbol(document.getElementById('tickerSearchInput').value);
             const sym = (_addSlotModalMode === 'watch_buy' && _addSlotLockedSymbol) ? _addSlotLockedSymbol : inputSymbol;
@@ -3097,7 +3048,8 @@
             const resultDiv = document.getElementById('tickerSearchResult');
             resultDiv.classList.remove('hidden');
             if (_addSlotModalMode !== 'watch_buy') {
-                document.getElementById('popularTickersSection').style.display = 'none';
+                const popular = document.getElementById('popularTickersSection');
+                if (popular) popular.style.display = 'none';
             }
             resultDiv.innerHTML = '<div class="flex items-center justify-center py-4"><i class="fa-solid fa-spinner fa-spin text-slate-400 mr-2"></i><span class="text-sm text-slate-400">검색 중...</span></div>';
             try {
