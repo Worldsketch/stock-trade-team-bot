@@ -2778,6 +2778,7 @@ class TradingBot:
                 total_qty=sell_qty,
                 initial_price=sell_price,
                 prefer_daytime=prefer_daytime,
+                position_qty_before=qty,
                 label=f"자동 익절 +{level:.1f}%",
                 reprice_steps=TAKE_PROFIT_SELL_REPRICE_STEPS,
                 monitor_sec=TAKE_PROFIT_SELL_MONITOR_SEC,
@@ -2851,6 +2852,7 @@ class TradingBot:
                     total_qty=sell_qty,
                     initial_price=sell_price,
                     prefer_daytime=prefer_daytime,
+                    position_qty_before=qty,
                 )
         
     def _get_mode_label(self) -> str:
@@ -2945,6 +2947,38 @@ class TradingBot:
             reverse=True,
         )
         return candidates[0]
+
+    def estimate_sell_filled_qty(
+        self,
+        symbol: str,
+        ordered_qty: int,
+        position_qty_before: float = 0.0,
+        fallback_filled_qty: int = 0,
+    ) -> int:
+        """미체결 목록에서 주문이 사라졌을 때 보유수량 변화로 체결수량을 추정합니다."""
+        ordered: int = max(0, int(ordered_qty))
+        if ordered <= 0:
+            return 0
+
+        estimated: int = 0
+        if position_qty_before > 0:
+            try:
+                data: Dict[str, Any] = self.api.get_balance_and_positions(item_cd=symbol, symbols=[symbol])
+                current_qty: float = 0.0
+                for pos in data.get("positions", []):
+                    if str(pos.get("symbol", "")).upper() != symbol.upper():
+                        continue
+                    current_qty = float(pos.get("quantity", 0.0) or 0.0)
+                    break
+                inferred_qty: int = int(max(0.0, float(position_qty_before) - current_qty) + 1e-6)
+                estimated = min(ordered, inferred_qty)
+            except Exception as estimate_error:
+                self.log(f"[매도 체결추정 오류] {symbol}: {estimate_error}", send_tg=False)
+
+        if estimated <= 0:
+            fallback: int = max(0, int(fallback_filled_qty))
+            estimated = min(ordered, fallback)
+        return estimated
 
     def _start_smart_buy_manager(
         self,
@@ -3054,6 +3088,7 @@ class TradingBot:
         total_qty: int,
         initial_price: float,
         prefer_daytime: bool,
+        position_qty_before: float = 0.0,
         label: str = "트레일링 스탑",
         reprice_steps: Optional[List[Tuple[int, float]]] = None,
         monitor_sec: Optional[int] = None,
@@ -3065,6 +3100,48 @@ class TradingBot:
             start_ts: float = time.time()
             last_price: float = initial_price
             last_remaining: int = total_qty
+
+            def _finalize_after_pending_cleared() -> None:
+                nonlocal last_remaining
+                fallback_filled_qty: int = max(0, total_qty - last_remaining)
+                filled_qty: int = self.estimate_sell_filled_qty(
+                    symbol=symbol,
+                    ordered_qty=total_qty,
+                    position_qty_before=position_qty_before,
+                    fallback_filled_qty=fallback_filled_qty,
+                )
+                if filled_qty <= 0 and position_qty_before > 0:
+                    # API 반영 지연 완화: 짧게 1회 재확인
+                    time.sleep(0.6)
+                    filled_qty = self.estimate_sell_filled_qty(
+                        symbol=symbol,
+                        ordered_qty=total_qty,
+                        position_qty_before=position_qty_before,
+                        fallback_filled_qty=fallback_filled_qty,
+                    )
+                completed: bool = filled_qty >= total_qty
+                filled_amount: float = filled_qty * last_price
+                self.finalize_pending_sell_trade(
+                    symbol=symbol,
+                    ordered_qty=total_qty,
+                    filled_qty=filled_qty,
+                    fill_price=last_price,
+                    completed=completed,
+                )
+                if filled_qty > 0:
+                    self.send_telegram_message(
+                        f"✅ [{label} 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주\n"
+                        f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f}"
+                    )
+                    self.log(f"✅ [{label} 체결확인] {symbol} {filled_qty}주 @ ${last_price:.2f}", send_tg=False)
+                else:
+                    self.send_telegram_message(
+                        f"ℹ️ [{label} 체결 확인 필요]\n종목: {symbol}\n"
+                        f"미체결 목록에서 주문은 사라졌지만 체결수량을 0주로 추정했습니다.\n"
+                        f"최근 주문가: ${last_price:.2f}\n브로커 체결내역을 확인해주세요."
+                    )
+                    self.log(f"ℹ️ [{label} 체결확인 보류] {symbol} 체결수량 추정 0주", send_tg=False)
+
             try:
                 for after_sec, discount in active_reprice_steps:
                     sleep_sec: float = after_sec - (time.time() - start_ts)
@@ -3074,20 +3151,7 @@ class TradingBot:
                     orders: List[Dict[str, Any]] = self.api.get_pending_orders(symbols=["__ALL__"])
                     pending: Optional[Dict[str, Any]] = self._pick_pending_order(orders, symbol, "매도")
                     if not pending:
-                        filled_qty: int = max(0, total_qty - last_remaining) or total_qty
-                        filled_amount: float = filled_qty * last_price
-                        self.finalize_pending_sell_trade(
-                            symbol=symbol,
-                            ordered_qty=total_qty,
-                            filled_qty=filled_qty,
-                            fill_price=last_price,
-                            completed=True,
-                        )
-                        self.send_telegram_message(
-                            f"✅ [{label} 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주\n"
-                            f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f}"
-                        )
-                        self.log(f"✅ [{label} 체결확인] {symbol} {filled_qty}주 @ ${last_price:.2f}", send_tg=False)
+                        _finalize_after_pending_cleared()
                         return
 
                     try:
@@ -3146,20 +3210,7 @@ class TradingBot:
                     orders = self.api.get_pending_orders(symbols=["__ALL__"])
                     pending = self._pick_pending_order(orders, symbol, "매도")
                     if not pending:
-                        filled_qty = max(0, total_qty - last_remaining) or total_qty
-                        filled_amount = filled_qty * last_price
-                        self.finalize_pending_sell_trade(
-                            symbol=symbol,
-                            ordered_qty=total_qty,
-                            filled_qty=filled_qty,
-                            fill_price=last_price,
-                            completed=True,
-                        )
-                        self.send_telegram_message(
-                            f"✅ [{label} 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주\n"
-                            f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f}"
-                        )
-                        self.log(f"✅ [{label} 체결확인] {symbol} {filled_qty}주 @ ${last_price:.2f}", send_tg=False)
+                        _finalize_after_pending_cleared()
                         return
                     try:
                         last_remaining = int(float(pending.get("remaining_qty", last_remaining)))
@@ -3257,7 +3308,9 @@ class TradingBot:
 
     def execute_strategy(self, now_et: datetime) -> None:
         """Strategy E: SMA200 필터 + 전일종가 기준 DCA + RSI<30 과매도 보너스"""
-        if not self.is_regular_market_open(now_et):
+        now_kst: datetime = now_et.astimezone(ZoneInfo("Asia/Seoul"))
+        is_trade_session, _ = self.get_order_window_flags(now_et=now_et, now_kst=now_kst)
+        if not is_trade_session:
             return
         
         total_equity: float = self.last_usd_balance
@@ -3341,13 +3394,36 @@ class TradingBot:
                 return spent_cash
 
             def _try_place_fixed_daily_shares(fixed_qty: int, tier_name: str = "") -> float:
-                nonlocal daily_buy_used_usd
+                nonlocal daily_buy_used_usd, daily_buy_cap_alert_sent, cash_floor_block_alert_sent
                 qty_fixed: int = int(max(1, fixed_qty))
                 buy_price: float = round(price * (1.0 + SMART_BUY_INITIAL_PREMIUM), 2)
                 required_cash: float = qty_fixed * buy_price
                 if required_cash <= 0:
                     return 0.0
                 if self.last_usd_balance < required_cash:
+                    return 0.0
+                if daily_buy_cap_usd <= 0:
+                    if cap_reason == "hard_floor" and (not cash_floor_block_alert_sent):
+                        self.log(
+                            f"🧱 [현금 바닥선 보호] 현금 비중 {cash_ratio*100:.1f}% ≤ 하한 {self.cash_floor_hard_ratio*100:.1f}% "
+                            f"→ 자동 매수 일시 중단",
+                            send_tg=True,
+                        )
+                        cash_floor_block_alert_sent = True
+                        self.daily_state['cash_floor_block_alert_sent'] = True
+                        self._save_daily_state()
+                    return 0.0
+                remaining_daily_budget: float = max(0.0, daily_buy_cap_usd - daily_buy_used_usd)
+                if remaining_daily_budget < required_cash:
+                    if remaining_daily_budget <= 0 and (not daily_buy_cap_alert_sent):
+                        self.log(
+                            f"🛑 [일일 매수 상한 도달] 오늘 자동매수 누적 ${daily_buy_used_usd:,.2f} / 상한 ${daily_buy_cap_usd:,.2f}",
+                            send_tg=True,
+                        )
+                        daily_buy_cap_alert_sent = True
+                        self.daily_state['daily_buy_cap_alert_sent'] = True
+                        self.daily_state['daily_buy_used_usd'] = round(daily_buy_used_usd, 2)
+                        self._save_daily_state()
                     return 0.0
                 reason: str = tier_name.strip() or f"매일 {qty_fixed}주 적립"
                 spent_cash: float = self._place_calculated_order(
@@ -3555,8 +3631,10 @@ class TradingBot:
                     self.daily_state['premarket_recheck_done'] = True
                     self._save_daily_state()
 
-                # 2. 거래 가능 시간인지 확인 (프리장 04:00 ~ 정규장 마감 16:00)
-                if self.is_active_trading_time(now_et):
+                # 2. 거래 가능 시간인지 확인 (미국장 ET 04:00~20:00 또는 데이장 KST 09:00~16:00)
+                now_kst: datetime = now_et.astimezone(ZoneInfo("Asia/Seoul"))
+                is_trade_session, _ = self.get_order_window_flags(now_et=now_et, now_kst=now_kst)
+                if is_trade_session:
                     # 시장 데이터 가져오기
                     self.fetch_market_data()
                     self._check_cash_ratio()

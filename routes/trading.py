@@ -65,6 +65,7 @@ def create_trading_router(
         initial_price: float,
         label: str,
         is_daytime: bool,
+        position_qty_before: float = 0.0,
     ) -> None:
         def _worker() -> None:
             start_ts = time.time()
@@ -75,6 +76,47 @@ def create_trading_router(
                 if live_data_cache:
                     live_data_cache.invalidate_pending()
                 return bot.api.get_pending_orders(symbols=bot.symbols)
+
+            def _finalize_after_pending_cleared(bot: TradingBot) -> None:
+                nonlocal last_remaining
+                fallback_filled_qty: int = max(0, total_qty - last_remaining)
+                filled_qty: int = bot.estimate_sell_filled_qty(
+                    symbol=symbol,
+                    ordered_qty=total_qty,
+                    position_qty_before=position_qty_before,
+                    fallback_filled_qty=fallback_filled_qty,
+                )
+                if filled_qty <= 0 and position_qty_before > 0:
+                    time.sleep(0.6)
+                    filled_qty = bot.estimate_sell_filled_qty(
+                        symbol=symbol,
+                        ordered_qty=total_qty,
+                        position_qty_before=position_qty_before,
+                        fallback_filled_qty=fallback_filled_qty,
+                    )
+                completed: bool = filled_qty >= total_qty
+                filled_amount: float = filled_qty * last_price
+                krw_filled: float = filled_amount * bot.exchange_rate
+                bot.finalize_pending_sell_trade(
+                    symbol=symbol,
+                    ordered_qty=total_qty,
+                    filled_qty=filled_qty,
+                    fill_price=last_price,
+                    completed=completed,
+                )
+                if filled_qty > 0:
+                    bot.send_telegram_message(
+                        f"✅ [수동 매도 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주 ({label})\n"
+                        f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f} (약 {krw_filled:,.0f}원)"
+                    )
+                    bot.log(f"✅ [수동매도 체결확인] {symbol} {filled_qty}주 ({label})")
+                else:
+                    bot.send_telegram_message(
+                        f"ℹ️ [수동 매도 체결 확인 필요]\n종목: {symbol}\n"
+                        f"미체결 목록에서 주문은 사라졌지만 체결수량을 0주로 추정했습니다.\n"
+                        f"최근 주문가: ${last_price:.2f}\n브로커 체결내역을 확인해주세요."
+                    )
+                    bot.log(f"ℹ️ [수동매도 체결확인 보류] {symbol} 체결수량 추정 0주 ({label})")
 
             try:
                 # 단계형 재호가
@@ -90,23 +132,7 @@ def create_trading_router(
                     orders = _load_pending_orders(bot)
                     pending = _pick_pending_sell_order(orders, symbol)
                     if not pending:
-                        filled_qty = max(0, total_qty - last_remaining)
-                        if filled_qty <= 0:
-                            filled_qty = total_qty
-                        filled_amount = filled_qty * last_price
-                        krw_filled = filled_amount * bot.exchange_rate
-                        bot.send_telegram_message(
-                            f"✅ [수동 매도 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주 ({label})\n"
-                            f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f} (약 {krw_filled:,.0f}원)"
-                        )
-                        bot.log(f"✅ [수동매도 체결확인] {symbol} {filled_qty}주 ({label})")
-                        bot.finalize_pending_sell_trade(
-                            symbol=symbol,
-                            ordered_qty=total_qty,
-                            filled_qty=filled_qty,
-                            fill_price=last_price,
-                            completed=True,
-                        )
+                        _finalize_after_pending_cleared(bot)
                         return
 
                     try:
@@ -175,23 +201,7 @@ def create_trading_router(
                     orders = _load_pending_orders(bot)
                     pending = _pick_pending_sell_order(orders, symbol)
                     if not pending:
-                        filled_qty = max(0, total_qty - last_remaining)
-                        if filled_qty <= 0:
-                            filled_qty = total_qty
-                        filled_amount = filled_qty * last_price
-                        krw_filled = filled_amount * bot.exchange_rate
-                        bot.send_telegram_message(
-                            f"✅ [수동 매도 체결 확인]\n종목: {symbol}\n수량: {filled_qty}주 ({label})\n"
-                            f"최근 주문가: ${last_price:.2f}\n예상 체결 금액: ${filled_amount:,.2f} (약 {krw_filled:,.0f}원)"
-                        )
-                        bot.log(f"✅ [수동매도 체결확인] {symbol} {filled_qty}주 ({label})")
-                        bot.finalize_pending_sell_trade(
-                            symbol=symbol,
-                            ordered_qty=total_qty,
-                            filled_qty=filled_qty,
-                            fill_price=last_price,
-                            completed=True,
-                        )
+                        _finalize_after_pending_cleared(bot)
                         return
                     try:
                         last_remaining = int(float(pending.get("remaining_qty", last_remaining)))
@@ -336,6 +346,7 @@ def create_trading_router(
                     initial_price=sell_price,
                     label=label,
                     is_daytime=is_daytime,
+                    position_qty_before=float(total_qty),
                 )
                 return {
                     "success": True,
