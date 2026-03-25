@@ -15,6 +15,7 @@ load_dotenv()
 HOST: str = os.getenv("DEPLOY_HOST", "")
 USER: str = os.getenv("DEPLOY_USER", "root")
 DEPLOY_PATH: str = os.getenv("DEPLOY_PATH", "")
+PM2_NAME: str = os.getenv("DEPLOY_PM2_NAME", "trade-team-bot").strip() or "trade-team-bot"
 
 if not HOST or not DEPLOY_PATH:
     print("❌ .env에 DEPLOY_HOST, DEPLOY_PATH를 설정해주세요.")
@@ -53,11 +54,18 @@ def upload_files() -> None:
 
 def restart_now() -> None:
     print("\n🔄 PM2 재시작 중...")
-    result = run(f"ssh {SSH_COMMON_OPTS} {TARGET} 'cd {DEPLOY_PATH} && pm2 restart trade-bot'")
+    remote_cmd = (
+        f"cd {shlex.quote(DEPLOY_PATH)} && "
+        f"(pm2 describe {shlex.quote(PM2_NAME)} >/dev/null 2>&1 "
+        f"&& pm2 restart {shlex.quote(PM2_NAME)} --update-env "
+        f"|| pm2 start app.py --name {shlex.quote(PM2_NAME)} --interpreter python3 --time)"
+    )
+    result = run(f"ssh {SSH_COMMON_OPTS} {TARGET} {shlex.quote(remote_cmd)}")
     print(result.stdout)
 
     print("\n✅ 재시작 완료!")
-    result = run(f"ssh {SSH_COMMON_OPTS} {TARGET} 'sleep 3 && pm2 status trade-bot'")
+    status_cmd = f"sleep 3 && pm2 status {shlex.quote(PM2_NAME)}"
+    result = run(f"ssh {SSH_COMMON_OPTS} {TARGET} {shlex.quote(status_cmd)}")
     print(result.stdout)
 
 
@@ -108,8 +116,8 @@ def schedule_restart(schedule: str, tz_name: str) -> None:
         f"if [ -f \"$PID\" ]; then OLD_PID=$(cat \"$PID\" 2>/dev/null || true); "
         f"if [ -n \"$OLD_PID\" ] && kill -0 \"$OLD_PID\" 2>/dev/null; then kill \"$OLD_PID\" 2>/dev/null || true; fi; fi; "
         f"(sleep {delay_sec}; cd {remote_path} && "
-        f"pm2 restart trade-bot >> \"$LOG\" 2>&1 && "
-        f"pm2 status trade-bot >> \"$LOG\" 2>&1) >/dev/null 2>&1 & "
+        f"pm2 restart {shlex.quote(PM2_NAME)} --update-env >> \"$LOG\" 2>&1 && "
+        f"pm2 status {shlex.quote(PM2_NAME)} >> \"$LOG\" 2>&1) >/dev/null 2>&1 & "
         f"echo $! > \"$PID\""
     )
     run(f"ssh {SSH_COMMON_OPTS} {TARGET} {shlex.quote(remote_script)}")
